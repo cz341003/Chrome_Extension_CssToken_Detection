@@ -21,10 +21,22 @@ interface DetectedElement {
   tokens?: Token[];
   hardcoded?: Hardcoded[];
   isVisible?: boolean;
+  frameId?: string;
 }
 
 const usedElements = ref<DetectedElement[]>([]);
 const unusedElements = ref<DetectedElement[]>([]);
+
+// 按 Frame 分组
+const groupedUnusedElements = computed(() => {
+  const groups: Record<string, DetectedElement[]> = {};
+  unusedElements.value.forEach(el => {
+    const frameId = el.frameId || 'Main Page';
+    if (!groups[frameId]) groups[frameId] = [];
+    groups[frameId].push(el);
+  });
+  return groups;
+});
 const scanning = ref(false);
 const error = ref<string | null>(null);
 const activeTab = ref<'unused'>('unused');
@@ -246,59 +258,66 @@ const groupHardcoded = (items: Hardcoded[]) => {
             </template>
           </div>
           <div v-else class="results">
-            <ul class="element-list">
-              <li 
-                v-for="el in unusedElements" 
-                :key="el.id" 
-                class="element-item is-unused" 
-                @click="highlightElement(el.id, true)"
-              >
-                <div class="element-header">
-                  <div class="tag-badge">{{ el.tagName }}</div>
-                  <span v-if="el.className" class="class-name" :title="el.className">
-                    .{{ el.className.split(' ').filter(c => c).join('.') }}
-                  </span>
-                  <div class="tech-line"></div>
-                  <button class="view-btn" @click="viewAncestors(el.id, $event)" :class="{ active: viewingAncestorsId === el.id }">
-                    {{ viewingAncestorsId === el.id ? '收起' : '查看' }}
-                  </button>
-                </div>
-
-                <!-- 祖先拓扑展示 -->
-                <div v-if="viewingAncestorsId === el.id && selectedElementAncestors" class="ancestor-topology">
-                  <div class="topology-title">结构拓扑 (从当前到祖先)</div>
-                  <div class="topology-list">
-                    <div v-for="(ancestor, index) in selectedElementAncestors" :key="index" class="topology-item">
-                      <div class="topology-node">
-                        <span class="node-tag">{{ ancestor.tagName }}</span>
-                        <span v-if="ancestor.className" class="node-class" :title="ancestor.className">
-                          .{{ ancestor.className.split(' ').filter((c: any) => c).join('.') }}
-                        </span>
-                      </div>
-                      <div v-if="index < selectedElementAncestors.length - 1" class="topology-connector">
-                        <div class="connector-line"></div>
-                      </div>
-                    </div>
+            <div v-for="(elements, frameId) in groupedUnusedElements" :key="frameId" class="frame-group">
+              <div class="frame-header">
+                <span class="frame-icon">▤</span>
+                <span class="frame-title">{{ frameId }}</span>
+                <span class="frame-count">{{ elements.length }}</span>
+              </div>
+              <ul class="element-list">
+                <li 
+                  v-for="el in elements" 
+                  :key="el.id" 
+                  class="element-item is-unused" 
+                  @click="highlightElement(el.id, true)"
+                >
+                  <div class="element-header">
+                    <div class="tag-badge">{{ el.tagName }}</div>
+                    <span v-if="el.className" class="class-name" :title="el.className">
+                      .{{ el.className.split(' ').filter(c => c).join('.') }}
+                    </span>
+                    <div class="tech-line"></div>
+                    <button class="view-btn" @click="viewAncestors(el.id, $event)" :class="{ active: viewingAncestorsId === el.id }">
+                      {{ viewingAncestorsId === el.id ? '收起' : '查看' }}
+                    </button>
                   </div>
-                </div>
 
-                <div class="group-container">
-                  <div v-for="(items, group) in groupHardcoded(el.hardcoded || [])" :key="group" class="prop-group">
-                    <div class="group-header warning">{{ getGroupLabel(group) }}</div>
-                    <div class="hardcoded-grid">
-                      <div v-for="item in items" :key="item.property" class="hardcoded-badge">
-                        <div v-if="getTokenType(item.value) === 'color'" class="color-preview" :style="{ backgroundColor: item.value }"></div>
-                        <div v-else class="type-icon">{{ getTokenIcon(getTokenType(item.value)) }}</div>
-                        <div class="hardcoded-details">
-                          <span class="prop-name">{{ item.property }}</span>
-                          <span class="prop-value">{{ item.value }}</span>
+                  <!-- 祖先拓扑展示 -->
+                  <div v-if="viewingAncestorsId === el.id && selectedElementAncestors" class="ancestor-topology">
+                    <div class="topology-title">结构拓扑 (从当前到祖先)</div>
+                    <div class="topology-list">
+                      <div v-for="(ancestor, index) in selectedElementAncestors" :key="index" class="topology-item">
+                        <div class="topology-node">
+                          <span class="node-tag">{{ ancestor.tagName }}</span>
+                          <span v-if="ancestor.className" class="node-class" :title="ancestor.className">
+                            .{{ ancestor.className.split(' ').filter((c: any) => c).join('.') }}
+                          </span>
+                        </div>
+                        <div v-if="index < selectedElementAncestors.length - 1" class="topology-connector">
+                          <div class="connector-line"></div>
                         </div>
                       </div>
                     </div>
                   </div>
-                </div>
-              </li>
-            </ul>
+
+                  <div class="group-container">
+                    <div v-for="(items, group) in groupHardcoded(el.hardcoded || [])" :key="group" class="prop-group">
+                      <div class="group-header warning">{{ getGroupLabel(group) }}</div>
+                      <div class="hardcoded-grid">
+                        <div v-for="item in items" :key="item.property" class="hardcoded-badge">
+                          <div v-if="getTokenType(item.value) === 'color'" class="color-preview" :style="{ backgroundColor: item.value }"></div>
+                          <div v-else class="type-icon">{{ getTokenIcon(getTokenType(item.value)) }}</div>
+                          <div class="hardcoded-details">
+                            <span class="prop-name">{{ item.property }}</span>
+                            <span class="prop-value">{{ item.value }}</span>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </li>
+              </ul>
+            </div>
           </div>
         </div>
 
@@ -846,5 +865,47 @@ main {
 
 .toast-icon {
   font-size: 14px;
+}
+
+.frame-group {
+  margin-bottom: 24px;
+}
+
+.frame-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  background: #1a1a1a;
+  border: 1px solid #333;
+  border-left: 3px solid #00f2ff;
+  margin-bottom: 12px;
+  position: sticky;
+  top: 0;
+  z-index: 10;
+}
+
+.frame-icon {
+  color: #00f2ff;
+  font-size: 14px;
+}
+
+.frame-title {
+  color: #fff;
+  font-weight: bold;
+  font-size: 11px;
+  flex: 1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.frame-count {
+  background: #00f2ff22;
+  color: #00f2ff;
+  padding: 2px 6px;
+  border-radius: 2px;
+  font-size: 9px;
+  font-weight: bold;
 }
 </style>

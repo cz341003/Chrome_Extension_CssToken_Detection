@@ -5,9 +5,8 @@ export default defineContentScript({
 
     browser.runtime.onMessage.addListener((message, sender, sendResponse) => {
       if (message.type === 'SCAN_TOKENS') {
-        // 修改数据结构：Element -> Property -> { varName, value, inherited }
-        const usedMap = new Map<Element, Map<string, { varName: string; value: string; inherited: boolean }>>();
-        const unusedMap = new Map<Element, { property: string; value: string }[]>();
+        // 优化：只关注未使用变量的元素，并增加 frameId 标识
+        const unusedMap = new Map<Element, { props: { property: string; value: string }[], frameId: string }>();
         const excludedTags = new Set([
           'svg', 'path', 'g', 'rect', 'circle', 'line', 'polyline', 'polygon', 'ellipse', 'use', 'defs', 'symbol',
           'script', 'style', 'link', 'meta', 'head', 'html', 'body',
@@ -23,17 +22,12 @@ export default defineContentScript({
           'font-size', 'font-weight'
         ];
 
-        const INHERITABLE_PROPS = new Set([
-          'color', 'font-size', 'font-weight', 'line-height'
-        ]);
-
         const yieldToMain = () => new Promise(resolve => setTimeout(resolve, 0));
 
-        const scanFrame = async (win: Window) => {
+        const scanFrame = async (win: Window, frameId: string) => {
           let doc: Document;
           try { doc = win.document; } catch (e) { return; }
 
-          const selectorsWithVars = new Map<string, Map<string, Set<string>>>();
           const selectorsWithHardcoded = new Map<string, { property: string; value: string }[]>();
 
           try {
@@ -44,26 +38,8 @@ export default defineContentScript({
                 for (const rule of rules) {
                   if (rule.type === 1 || rule instanceof (win as any).CSSStyleRule) {
                     const styleRule = rule as CSSStyleRule;
-                    const cssText = styleRule.cssText;
-                    if (cssText.includes('var(--')) {
-                      const style = styleRule.style;
-                      for (let i = 0; i < style.length; i++) {
-                        const prop = style[i];
-                        const val = style.getPropertyValue(prop);
-                        if (val.includes('var(--')) {
-                          const matches = val.match(/var\((--[^)]+)\)/g);
-                          if (matches) {
-                            if (!selectorsWithVars.has(styleRule.selectorText)) {
-                              selectorsWithVars.set(styleRule.selectorText, new Map());
-                            }
-                            const propMap = selectorsWithVars.get(styleRule.selectorText)!;
-                            if (!propMap.has(prop)) propMap.set(prop, new Set());
-                            matches.forEach((m: string) => propMap.get(prop)!.add(m.slice(4, -1)));
-                          }
-                        }
-                      }
-                    }
-
+                    
+                    // 优化：不再扫描 var(--) 使用情况，只关注硬编码属性
                     TARGET_PROPERTIES.forEach(prop => {
                       const val = styleRule.style.getPropertyValue(prop);
                       if (val && !val.includes('var(') && !['inherit', 'initial', 'transparent', 'unset', 'none', '0', '0px'].includes(val.trim())) {
@@ -80,67 +56,6 @@ export default defineContentScript({
             }
           } catch (e) {}
 
-          const selectorEntries = Array.from(selectorsWithVars.entries());
-          for (const [selector, propMap] of selectorEntries) {
-            try {
-              const elements = doc.querySelectorAll(selector);
-              for (const el of Array.from(elements)) {
-                if (usedMap.size > 2000) break;
-                if (excludedTags.has(el.tagName.toLowerCase())) continue;
-
-                if (!usedMap.has(el)) usedMap.set(el, new Map());
-                const elProps = usedMap.get(el)!;
-                const style = win.getComputedStyle(el);
-
-                propMap.forEach((varNames, prop) => {
-                  varNames.forEach(name => {
-                    const val = style.getPropertyValue(name).trim();
-                    if (val) elProps.set(prop, { varName: name, value: val, inherited: false });
-                  });
-
-                  if (INHERITABLE_PROPS.has(prop)) {
-                    const children = el.querySelectorAll('*');
-                    children.forEach(child => {
-                      if (excludedTags.has(child.tagName.toLowerCase())) return;
-                      if (!usedMap.has(child)) usedMap.set(child, new Map());
-                      const childProps = usedMap.get(child)!;
-                      varNames.forEach(name => {
-                        if (!childProps.has(prop)) {
-                          const childStyle = win.getComputedStyle(child);
-                          const childVal = childStyle.getPropertyValue(name).trim();
-                          if (childVal) childProps.set(prop, { varName: name, value: childVal, inherited: true });
-                        }
-                      });
-                    });
-                  }
-                });
-              }
-            } catch (e) {}
-            await yieldToMain();
-          }
-
-          const inlineElements = doc.querySelectorAll('[style*="var(--"]');
-          inlineElements.forEach(el => {
-            if (excludedTags.has(el.tagName.toLowerCase())) return;
-            const styleAttr = el.getAttribute('style') || '';
-            // 简单的内联解析
-            const parts = styleAttr.split(';');
-            parts.forEach(part => {
-              const [prop, val] = part.split(':').map(s => s.trim());
-              if (prop && val && val.includes('var(--')) {
-                const match = val.match(/var\((--[^)]+)\)/);
-                if (match) {
-                  if (!usedMap.has(el)) usedMap.set(el, new Map());
-                  const elProps = usedMap.get(el)!;
-                  const name = match[1];
-                  const computedStyle = win.getComputedStyle(el);
-                  const computedVal = computedStyle.getPropertyValue(name).trim();
-                  if (computedVal) elProps.set(prop, { varName: name, value: computedVal, inherited: false });
-                }
-              }
-            });
-          });
-
           const hardcodedEntries = Array.from(selectorsWithHardcoded.entries());
           for (const [selector, props] of hardcodedEntries) {
             try {
@@ -148,8 +63,8 @@ export default defineContentScript({
               elements.forEach(el => {
                 if (unusedMap.size > 2000) return;
                 if (excludedTags.has(el.tagName.toLowerCase())) return;
-                if (!unusedMap.has(el)) unusedMap.set(el, []);
-                unusedMap.get(el)?.push(...props);
+                if (!unusedMap.has(el)) unusedMap.set(el, { props: [], frameId });
+                unusedMap.get(el)?.props.push(...props);
               });
             } catch (e) {}
             await yieldToMain();
@@ -160,14 +75,15 @@ export default defineContentScript({
             try {
               const style = win.getComputedStyle(iframe);
               if (style.display !== 'none' && iframe.contentWindow) {
-                await scanFrame(iframe.contentWindow);
+                const iframeId = iframe.id || iframe.name || `Iframe-${Math.random().toString(36).substr(2, 5)}`;
+                await scanFrame(iframe.contentWindow, iframeId);
               }
             } catch (e) {}
           }
         };
 
         (async () => {
-          await scanFrame(window);
+          await scanFrame(window, 'Main Page');
 
           let elementIndex = 0;
           const formatElement = (el: Element, index: number) => {
@@ -185,26 +101,15 @@ export default defineContentScript({
             return { id, tagName: el.tagName.toLowerCase(), className, isVisible };
           };
 
-          const usedResults = Array.from(usedMap.entries()).map(([el, propMap]) => ({
-            ...formatElement(el, elementIndex++),
-            type: 'used',
-            tokens: Array.from(propMap.entries()).map(([prop, info]) => ({ 
-              property: prop,
-              name: info.varName, 
-              value: info.value, 
-              inherited: info.inherited 
-            }))
-          }));
-
           const unusedResults = Array.from(unusedMap.entries())
-            .filter(([el]) => !usedMap.has(el))
-            .map(([el, props]) => ({
+            .map(([el, data]) => ({
               ...formatElement(el, elementIndex++),
               type: 'unused',
-              hardcoded: props.filter((v, i, a) => a.findIndex(t => t.property === v.property) === i)
+              frameId: data.frameId,
+              hardcoded: data.props.filter((v, i, a) => a.findIndex(t => t.property === v.property) === i)
             }));
 
-          sendResponse({ used: usedResults, unused: unusedResults });
+          sendResponse({ used: [], unused: unusedResults });
         })();
 
         return true;
