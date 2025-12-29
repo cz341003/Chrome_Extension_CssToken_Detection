@@ -27,14 +27,14 @@ const usedElements = ref<DetectedElement[]>([]);
 const unusedElements = ref<DetectedElement[]>([]);
 const scanning = ref(false);
 const error = ref<string | null>(null);
-const activeTab = ref<'used' | 'unused'>('unused');
+const activeTab = ref<'unused'>('unused');
 const mainScrollContainer = ref<HTMLElement | null>(null);
 const showToast = ref(false);
 const toastMessage = ref('');
 const selectedElementAncestors = ref<any[] | null>(null);
 const viewingAncestorsId = ref<string | null>(null);
 
-const switchTab = (tab: 'used' | 'unused') => {
+const switchTab = (tab: 'unused') => {
   activeTab.value = tab;
   if (mainScrollContainer.value) {
     mainScrollContainer.value.scrollTop = 0;
@@ -215,22 +215,12 @@ const groupHardcoded = (items: Hardcoded[]) => {
     </header>
 
     <div class="tabs">
-      <button 
-        class="tab-item warning" 
-        :class="{ active: activeTab === 'unused' }" 
-        @click="switchTab('unused')"
+      <div 
+        class="tab-item warning active"
       >
-        <span class="tab-label">未使用变量</span>
+        <span class="tab-label">未使用变量检测</span>
         <span class="tab-count">{{ unusedElements.length }}+</span>
-      </button>
-      <button 
-        class="tab-item" 
-        :class="{ active: activeTab === 'used' }" 
-        @click="switchTab('used')"
-      >
-        <span class="tab-label">已使用变量</span>
-        <span class="tab-count">{{ usedElements.length }}+</span>
-      </button>
+      </div>
     </div>
 
     <main ref="mainScrollContainer">
@@ -312,50 +302,6 @@ const groupHardcoded = (items: Hardcoded[]) => {
           </div>
         </div>
 
-        <!-- 已使用变量 Tab -->
-        <div v-else-if="activeTab === 'used'">
-          <div v-if="usedElements.length === 0" class="status-card empty">
-            <div class="tech-empty-icon">∅</div>
-            <h3>未发现变量</h3>
-            <p>当前页面未检测到 <code>var(--*)</code> 变量的使用。</p>
-          </div>
-          <div v-else class="results">
-            <ul class="element-list">
-              <li 
-                v-for="el in usedElements" 
-                :key="el.id" 
-                class="element-item" 
-                @click="highlightElement(el.id, false)"
-              >
-                <div class="element-header">
-                  <div class="tag-badge">{{ el.tagName }}</div>
-                  <span v-if="el.className" class="class-name" :title="el.className">
-                    .{{ el.className.split(' ').filter(c => c).join('.') }}
-                  </span>
-                  <div class="tech-line"></div>
-                </div>
-                <div class="group-container">
-                  <div v-for="(tokens, group) in groupTokens(el.tokens || [])" :key="group" class="prop-group">
-                    <div class="group-header">{{ getGroupLabel(group) }}</div>
-                    <div class="token-grid">
-                      <div v-for="token in tokens" :key="token.name" class="token-badge">
-                        <div v-if="getTokenType(token.value) === 'color'" class="color-preview" :style="{ backgroundColor: token.value }"></div>
-                        <div v-else class="type-icon">{{ getTokenIcon(getTokenType(token.value)) }}</div>
-                        <div class="token-details">
-                          <div class="token-name-row">
-                            <span class="token-name">{{ token.property }}: {{ token.name }}</span>
-                            <span v-if="token.inherited" class="inherited-tag">继承</span>
-                          </div>
-                          <span class="token-value">{{ token.value }}</span>
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-                </div>
-              </li>
-            </ul>
-          </div>
-        </div>
       </div>
     </main>
     

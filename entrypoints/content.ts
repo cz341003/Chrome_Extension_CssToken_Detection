@@ -14,6 +14,15 @@ export default defineContentScript({
           'canvas', 'picture', 'em', 'strong', 'br'
         ]);
         
+        const TARGET_PROPERTIES = [
+          'color', 'background-color', 'border-color', 'border-top-color', 'border-right-color', 'border-bottom-color', 'border-left-color', 'outline-color', 'text-decoration-color',
+          'margin', 'margin-top', 'margin-right', 'margin-bottom', 'margin-left', 'padding', 'padding-top', 'padding-right', 'padding-bottom', 'padding-left',
+          'border', 'border-width', 'border-top-width', 'border-right-width', 'border-bottom-width', 'border-left-width', 'border-style', 'border-top-style', 'border-right-style', 'border-bottom-style', 'border-left-style', 'border-radius', 'border-top-left-radius', 'border-top-right-radius', 'border-bottom-left-radius', 'border-bottom-right-radius',
+          'box-shadow', 'text-shadow',
+          'line-height',
+          'font-size', 'font-weight'
+        ];
+
         const INHERITABLE_PROPS = new Set([
           'color', 'font-size', 'font-weight', 'line-height'
         ]);
@@ -55,10 +64,9 @@ export default defineContentScript({
                       }
                     }
 
-                    const colorProps = ['color', 'background-color', 'border-color', 'fill', 'stroke'];
-                    colorProps.forEach(prop => {
+                    TARGET_PROPERTIES.forEach(prop => {
                       const val = styleRule.style.getPropertyValue(prop);
-                      if (val && !val.includes('var(') && !['inherit', 'initial', 'transparent', 'unset', 'none'].includes(val)) {
+                      if (val && !val.includes('var(') && !['inherit', 'initial', 'transparent', 'unset', 'none', '0', '0px'].includes(val.trim())) {
                         if (!selectorsWithHardcoded.has(styleRule.selectorText)) {
                           selectorsWithHardcoded.set(styleRule.selectorText, []);
                         }
