@@ -21,8 +21,16 @@ export default defineContentScript({
           'line-height',
           'font-size', 'font-weight'
         ];
+        const TARGET_PROPERTIES_SET = new Set(TARGET_PROPERTIES);
 
-        const yieldToMain = () => new Promise(resolve => setTimeout(resolve, 0));
+        let lastYieldTime = performance.now();
+        const yieldToMain = async (force = false) => {
+          const now = performance.now();
+          if (force || now - lastYieldTime > 30) {
+            await new Promise(resolve => setTimeout(resolve, 0));
+            lastYieldTime = performance.now();
+          }
+        };
 
         const scanFrame = async (win: Window, frameId: string) => {
           let doc: Document;
@@ -31,25 +39,33 @@ export default defineContentScript({
           const selectorsWithHardcoded = new Map<string, { property: string; value: string }[]>();
 
           try {
-            const sheets = Array.from(doc.styleSheets);
-            for (const sheet of sheets) {
+            const sheets = doc.styleSheets;
+            for (let i = 0; i < sheets.length; i++) {
+              const sheet = sheets[i];
               try {
-                const rules = Array.from(sheet.cssRules || (sheet as any).rules || []);
-                for (const rule of rules) {
+                const rules = sheet.cssRules || (sheet as any).rules;
+                if (!rules) continue;
+                for (let j = 0; j < rules.length; j++) {
+                  const rule = rules[j];
                   if (rule.type === 1 || rule instanceof (win as any).CSSStyleRule) {
                     const styleRule = rule as CSSStyleRule;
+                    const style = styleRule.style;
                     
-                    // 优化：不再扫描 var(--) 使用情况，只关注硬编码属性
-                    TARGET_PROPERTIES.forEach(prop => {
-                      const val = styleRule.style.getPropertyValue(prop);
-                      if (val && !val.includes('var(') && !['inherit', 'initial', 'transparent', 'unset', 'none', '0', '0px'].includes(val.trim())) {
-                        if (!selectorsWithHardcoded.has(styleRule.selectorText)) {
-                          selectorsWithHardcoded.set(styleRule.selectorText, []);
+                    // 优化：遍历规则已有的属性，而不是遍历所有目标属性
+                    for (let k = 0; k < style.length; k++) {
+                      const prop = style[k];
+                      if (TARGET_PROPERTIES_SET.has(prop)) {
+                        const val = style.getPropertyValue(prop);
+                        if (val && !val.includes('var(') && !['inherit', 'initial', 'transparent', 'unset', 'none', '0', '0px'].includes(val.trim())) {
+                          if (!selectorsWithHardcoded.has(styleRule.selectorText)) {
+                            selectorsWithHardcoded.set(styleRule.selectorText, []);
+                          }
+                          selectorsWithHardcoded.get(styleRule.selectorText)?.push({ property: prop, value: val });
                         }
-                        selectorsWithHardcoded.get(styleRule.selectorText)?.push({ property: prop, value: val });
                       }
-                    });
+                    }
                   }
+                  if (j % 100 === 0) await yieldToMain();
                 }
               } catch (e) {}
               await yieldToMain();
@@ -57,16 +73,51 @@ export default defineContentScript({
           } catch (e) {}
 
           const hardcodedEntries = Array.from(selectorsWithHardcoded.entries());
-          for (const [selector, props] of hardcodedEntries) {
+          // 优化：批量处理选择器，减少 querySelectorAll 的全文档扫描次数
+          const BATCH_SIZE = 50;
+          for (let i = 0; i < hardcodedEntries.length; i += BATCH_SIZE) {
+            if (unusedMap.size > 2000) break;
+            
+            const batch = hardcodedEntries.slice(i, i + BATCH_SIZE);
+            const combinedSelector = batch.map(([s]) => s).join(',');
+            
             try {
-              const elements = doc.querySelectorAll(selector);
-              elements.forEach(el => {
-                if (unusedMap.size > 2000) return;
-                if (excludedTags.has(el.tagName.toLowerCase())) return;
-                if (!unusedMap.has(el)) unusedMap.set(el, { props: [], frameId });
-                unusedMap.get(el)?.props.push(...props);
-              });
-            } catch (e) {}
+              const elements = doc.querySelectorAll(combinedSelector);
+              for (let j = 0; j < elements.length; j++) {
+                if (unusedMap.size > 2000) break;
+                const el = elements[j];
+                const tagName = el.tagName.toLowerCase();
+                if (excludedTags.has(tagName)) continue;
+
+                // 找出该元素匹配 batch 中的哪些具体选择器
+                for (let k = 0; k < batch.length; k++) {
+                  const [selector, props] = batch[k];
+                  try {
+                    if (el.matches(selector)) {
+                      if (!unusedMap.has(el)) unusedMap.set(el, { props: [], frameId });
+                      unusedMap.get(el)?.props.push(...props);
+                    }
+                  } catch (e) {}
+                }
+                if (j % 100 === 0) await yieldToMain();
+              }
+            } catch (e) {
+              // 如果合并选择器失败（如语法错误），退回到逐个处理
+              for (let j = 0; j < batch.length; j++) {
+                const [selector, props] = batch[j];
+                try {
+                  const elements = doc.querySelectorAll(selector);
+                  for (let k = 0; k < elements.length; k++) {
+                    if (unusedMap.size > 2000) break;
+                    const el = elements[k];
+                    if (excludedTags.has(el.tagName.toLowerCase())) continue;
+                    if (!unusedMap.has(el)) unusedMap.set(el, { props: [], frameId });
+                    unusedMap.get(el)?.props.push(...props);
+                    if (k % 100 === 0) await yieldToMain();
+                  }
+                } catch (e) {}
+              }
+            }
             await yieldToMain();
           }
 
