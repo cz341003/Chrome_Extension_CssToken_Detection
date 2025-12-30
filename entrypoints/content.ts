@@ -32,6 +32,26 @@ export default defineContentScript({
           }
         };
 
+        const seenFingerprints = new Set<string>();
+        const getElementFingerprint = (el: Element, frameId: string) => {
+          const tagName = el.tagName.toLowerCase();
+          let className = '';
+          if (typeof el.className === 'string') className = el.className;
+          else if (typeof el.className === 'object' && el.className !== null) className = (el.className as any).baseVal || '';
+          const sortedClass = className.split(/\s+/).sort().join(' ');
+          
+          const parent = el.parentElement;
+          let parentInfo = '';
+          if (parent) {
+            let pClass = '';
+            if (typeof parent.className === 'string') pClass = parent.className;
+            else if (typeof parent.className === 'object' && parent.className !== null) pClass = (parent.className as any).baseVal || '';
+            parentInfo = `${parent.tagName.toLowerCase()}.${pClass.split(/\s+/).sort().join(' ')}`;
+          }
+          
+          return `${frameId}:${tagName}.${sortedClass}<${parentInfo}`;
+        };
+
         const scanFrame = async (win: Window, frameId: string) => {
           let doc: Document;
           try { doc = win.document; } catch (e) { return; }
@@ -86,8 +106,16 @@ export default defineContentScript({
               for (let j = 0; j < elements.length; j++) {
                 if (unusedMap.size > 2000) break;
                 const el = elements[j];
+
+                // 优化：指纹去重，跳过循环生成的重复元素
+                const fingerprint = getElementFingerprint(el, frameId);
+                if (seenFingerprints.has(fingerprint)) continue;
+
                 const tagName = el.tagName.toLowerCase();
                 if (excludedTags.has(tagName)) continue;
+
+                // 标记为已处理
+                seenFingerprints.add(fingerprint);
 
                 // 找出该元素匹配 batch 中的哪些具体选择器
                 for (let k = 0; k < batch.length; k++) {
@@ -110,7 +138,13 @@ export default defineContentScript({
                   for (let k = 0; k < elements.length; k++) {
                     if (unusedMap.size > 2000) break;
                     const el = elements[k];
+
+                    const fingerprint = getElementFingerprint(el, frameId);
+                    if (seenFingerprints.has(fingerprint)) continue;
+
                     if (excludedTags.has(el.tagName.toLowerCase())) continue;
+                    
+                    seenFingerprints.add(fingerprint);
                     if (!unusedMap.has(el)) unusedMap.set(el, { props: [], frameId });
                     unusedMap.get(el)?.props.push(...props);
                     if (k % 100 === 0) await yieldToMain();
