@@ -26,17 +26,31 @@ interface DetectedElement {
 
 const usedElements = ref<DetectedElement[]>([]);
 const unusedElements = ref<DetectedElement[]>([]);
+const hasScanned = ref(false);
+const needsRescan = ref(false);
+const selectedFilter = ref<string>('all');
 
-// 按 Frame 分组
-const groupedUnusedElements = computed(() => {
+// 按 Frame 分组并过滤
+const filteredUnusedElements = computed(() => {
+  let filtered = unusedElements.value;
+  if (selectedFilter.value !== 'all') {
+    filtered = unusedElements.value.filter(el => 
+      el.hardcoded?.some(h => getGroup(h.property) === selectedFilter.value)
+    ).map(el => ({
+      ...el,
+      hardcoded: el.hardcoded?.filter(h => getGroup(h.property) === selectedFilter.value)
+    }));
+  }
+
   const groups: Record<string, DetectedElement[]> = {};
-  unusedElements.value.forEach(el => {
+  filtered.forEach(el => {
     const frameId = el.frameId || 'Main Page';
     if (!groups[frameId]) groups[frameId] = [];
     groups[frameId].push(el);
   });
   return groups;
 });
+
 const scanning = ref(false);
 const error = ref<string | null>(null);
 const activeTab = ref<'unused'>('unused');
@@ -45,6 +59,8 @@ const showToast = ref(false);
 const toastMessage = ref('');
 const selectedElementAncestors = ref<any[] | null>(null);
 const viewingAncestorsId = ref<string | null>(null);
+const screenshotUrl = ref<string | null>(null);
+const showScreenshotModal = ref(false);
 
 const switchTab = (tab: 'unused') => {
   activeTab.value = tab;
@@ -58,6 +74,8 @@ const scanTokens = async () => {
   
   scanning.value = true;
   error.value = null;
+  hasScanned.value = true;
+  needsRescan.value = false;
   selectedElementAncestors.value = null;
   viewingAncestorsId.value = null;
   try {
@@ -129,12 +147,13 @@ const viewAncestors = async (id: string, event: Event) => {
 
 const messageListener = (message: any) => {
   if (message.type === 'TAB_UPDATED' || message.type === 'TAB_ACTIVATED' || message.type === 'IFRAME_CHANGED') {
-    scanTokens();
+    if (hasScanned.value) {
+      needsRescan.value = true;
+    }
   }
 };
 
 onMounted(() => {
-  scanTokens();
   browser.runtime.onMessage.addListener(messageListener);
 });
 
@@ -165,6 +184,7 @@ const getGroupLabel = (group: string) => {
     case 'spacing': return '间距与布局';
     case 'border': return '边框与圆角';
     case 'shadow': return '阴影特效';
+    case 'layout': return '尺寸与位置';
     case 'background': return '背景样式';
     default: return '其他属性';
   }
@@ -207,6 +227,71 @@ const groupHardcoded = (items: Hardcoded[]) => {
   });
   return groups;
 };
+
+const handleScreenshotClick = async (id: string) => {
+  scanning.value = true;
+  try {
+    const [tab] = await browser.tabs.query({ active: true, currentWindow: true });
+    if (!tab?.id) return;
+
+    // 1. 获取元素坐标
+    const rectRes = await browser.tabs.sendMessage(tab.id, { type: 'GET_ELEMENT_RECT', id });
+    if (!rectRes?.rect) {
+      toastMessage.value = '无法获取元素位置，请确保元素在页面上可见。';
+      showToast.value = true;
+      setTimeout(() => showToast.value = false, 3000);
+      return;
+    }
+
+    // 2. 捕获标签页截图
+    const capRes = await browser.runtime.sendMessage({ type: 'CAPTURE_TAB' });
+    if (capRes.error || !capRes.dataUrl) {
+      throw new Error(capRes.error || '截图失败');
+    }
+
+    // 3. Canvas 合成
+    const { x, y, width, height, dpr } = rectRes.rect;
+    const canvas = document.createElement('canvas');
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+
+    const img = new Image();
+    img.onload = () => {
+      canvas.width = img.width;
+      canvas.height = img.height;
+      ctx.drawImage(img, 0, 0);
+      
+      // 绘制红框
+      ctx.strokeStyle = '#dc3545';
+      ctx.lineWidth = 3 * dpr;
+      ctx.setLineDash([10 * dpr, 5 * dpr]);
+      ctx.strokeRect(x * dpr, y * dpr, width * dpr, height * dpr);
+      
+      // 绘制半透明遮罩（可选，突出显示区域）
+      ctx.fillStyle = 'rgba(220, 53, 69, 0.1)';
+      ctx.fillRect(x * dpr, y * dpr, width * dpr, height * dpr);
+
+      screenshotUrl.value = canvas.toDataURL('image/png');
+      showScreenshotModal.value = true;
+      scanning.value = false;
+    };
+    img.src = capRes.dataUrl;
+  } catch (e) {
+    console.error('Screenshot failed:', e);
+    toastMessage.value = '截图生成失败，请重试。';
+    showToast.value = true;
+    setTimeout(() => showToast.value = false, 3000);
+    scanning.value = false;
+  }
+};
+
+const downloadScreenshot = () => {
+  if (!screenshotUrl.value) return;
+  const link = document.createElement('a');
+  link.href = screenshotUrl.value;
+  link.download = `css-token-issue-${Date.now()}.png`;
+  link.click();
+};
 </script>
 
 <template>
@@ -218,7 +303,7 @@ const groupHardcoded = (items: Hardcoded[]) => {
         </div>
         <h1>CSS TOKEN DETECTOR</h1>
       </div>
-      <div class="header-actions">
+      <div class="header-actions" v-if="hasScanned">
         <button @click="scanTokens" :disabled="scanning" class="scan-btn" :class="{ 'is-scanning': scanning }">
           <span class="scan-icon"></span>
           {{ scanning ? '正在扫描...' : '重新扫描' }}
@@ -226,39 +311,73 @@ const groupHardcoded = (items: Hardcoded[]) => {
       </div>
     </header>
 
-    <div class="tabs">
-      <div 
-        class="tab-item warning active"
-      >
+    <div class="tabs" v-if="hasScanned">
+      <div class="tab-item warning active">
         <span class="tab-label">未使用变量检测</span>
-        <span class="tab-count">{{ unusedElements.length }}+</span>
+        <span class="tab-count">{{ unusedElements.length }}</span>
+      </div>
+    </div>
+
+    <div class="filter-bar" v-if="hasScanned && unusedElements.length > 0">
+      <div 
+        class="filter-item" 
+        :class="{ active: selectedFilter === 'all' }"
+        @click="selectedFilter = 'all'"
+      >全部</div>
+      <div 
+        v-for="(label, key) in PROPERTY_GROUPS" 
+        :key="key"
+        class="filter-item"
+        :class="{ active: selectedFilter === key }"
+        @click="selectedFilter = key"
+      >
+        {{ getGroupLabel(key) }}
       </div>
     </div>
 
     <main ref="mainScrollContainer">
-      <div v-if="error" class="status-card error">
+      <div v-if="needsRescan" class="rescan-overlay">
+        <div class="rescan-card">
+          <div class="rescan-icon">🔄</div>
+          <h3>检测到页面更新</h3>
+          <p>页面内容或路由已发生变化，建议重新扫描以获取准确结果。</p>
+          <button @click="scanTokens" class="main-scan-btn">立即重新扫描</button>
+          <button @click="needsRescan = false" class="secondary-btn">稍后处理</button>
+        </div>
+      </div>
+
+      <div v-if="!hasScanned" class="welcome-screen">
+        <div class="welcome-content">
+          <div class="welcome-icon">🔍</div>
+          <h2>准备好开始了吗？</h2>
+          <p>点击下方按钮扫描当前页面的 CSS 变量使用情况</p>
+          <button @click="scanTokens" :disabled="scanning" class="main-scan-btn">
+            {{ scanning ? '正在分析中...' : '开始扫描页面' }}
+          </button>
+        </div>
+      </div>
+
+      <div v-else-if="error" class="status-card error">
         <div class="tech-error-icon">!</div>
         <p>{{ error }}</p>
-        <button @click="scanTokens" class="retry-btn">RETRY_SYSTEM</button>
+        <button @click="scanTokens" class="retry-btn">重试扫描</button>
       </div>
       
       <div v-else-if="!scanning">
         <!-- 未使用变量 Tab -->
         <div v-if="activeTab === 'unused'">
-          <div v-if="unusedElements.length === 0" class="status-card" :class="usedElements.length === 0 ? 'empty' : 'success'">
-            <template v-if="usedElements.length === 0">
-              <div class="tech-empty-icon">∅</div>
-              <h3>未发现变量</h3>
-              <p>当前页面未检测到 <code>var(--*)</code> 变量的使用。</p>
-            </template>
-            <template v-else>
-              <div class="tech-success-icon">✓</div>
-              <h3>系统已优化</h3>
-              <p>所有检测到的属性均已成功映射到 CSS 变量。保持高标准。</p>
-            </template>
+          <div v-if="unusedElements.length === 0" class="status-card success">
+            <div class="tech-success-icon">✓</div>
+            <h3>未发现硬编码属性</h3>
+            <p>太棒了！当前页面所有检测到的属性均已使用 CSS 变量。</p>
+          </div>
+          <div v-else-if="Object.keys(filteredUnusedElements).length === 0" class="status-card empty">
+            <div class="tech-empty-icon">∅</div>
+            <h3>无匹配结果</h3>
+            <p>当前分类下未发现硬编码属性。</p>
           </div>
           <div v-else class="results">
-            <div v-for="(elements, frameId) in groupedUnusedElements" :key="frameId" class="frame-group">
+            <div v-for="(elements, frameId) in filteredUnusedElements" :key="frameId" class="frame-group">
               <div class="frame-header">
                 <span class="frame-icon">▤</span>
                 <span class="frame-title">{{ frameId }}</span>
@@ -278,7 +397,10 @@ const groupHardcoded = (items: Hardcoded[]) => {
                     </span>
                     <div class="tech-line"></div>
                     <button class="view-btn" @click="viewAncestors(el.id, $event)" :class="{ active: viewingAncestorsId === el.id }">
-                      {{ viewingAncestorsId === el.id ? '收起' : '查看' }}
+                      结构
+                    </button>
+                    <button class="screenshot-btn" @click.stop="handleScreenshotClick(el.id)">
+                      截图
                     </button>
                   </div>
 
@@ -334,6 +456,24 @@ const groupHardcoded = (items: Hardcoded[]) => {
     </Transition>
 
     <Transition name="fade">
+      <div v-if="showScreenshotModal" class="screenshot-modal" @click="showScreenshotModal = false">
+        <div class="modal-content" @click.stop>
+          <div class="modal-header">
+            <h3>异常元素截图</h3>
+            <button class="close-btn" @click="showScreenshotModal = false">×</button>
+          </div>
+          <div class="modal-body">
+            <img :src="screenshotUrl!" alt="Screenshot" />
+          </div>
+          <div class="modal-footer">
+            <button class="secondary-btn" @click="showScreenshotModal = false">关闭</button>
+            <button class="main-scan-btn" @click="downloadScreenshot">下载截图</button>
+          </div>
+        </div>
+      </div>
+    </Transition>
+
+    <Transition name="fade">
       <div v-if="scanning" class="scanning-overlay">
         <div class="hud-loader">
           <div class="hud-circle"></div>
@@ -359,9 +499,9 @@ const groupHardcoded = (items: Hardcoded[]) => {
   display: flex;
   flex-direction: column;
   height: 100vh;
-  background-color: #0a0a0a;
-  color: #00f2ff;
-  font-family: 'JetBrains Mono', 'Fira Code', monospace;
+  background-color: #f8f9fa;
+  color: #333;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
   overflow: hidden;
 }
 
@@ -369,69 +509,63 @@ header {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  padding: 16px;
-  background: linear-gradient(180deg, #1a1a1a 0%, #0a0a0a 100%);
-  border-bottom: 1px solid #00f2ff33;
-  box-shadow: 0 0 20px #00f2ff11;
+  padding: 12px 16px;
+  background: #fff;
+  border-bottom: 1px solid #eee;
 }
 
 .logo-area {
   display: flex;
   align-items: center;
-  gap: 12px;
+  gap: 10px;
 }
 
 .tech-logo {
-  width: 24px;
-  height: 24px;
-  border: 2px solid #00f2ff;
+  width: 20px;
+  height: 20px;
+  border: 2px solid #4a90e2;
   position: relative;
-  animation: rotate 4s linear infinite;
 }
 
 .logo-inner {
   position: absolute;
-  top: 4px;
-  left: 4px;
-  right: 4px;
-  bottom: 4px;
-  background: #00f2ff;
-  clip-path: polygon(50% 0%, 100% 50%, 50% 100%, 0% 50%);
+  top: 3px;
+  left: 3px;
+  right: 3px;
+  bottom: 3px;
+  background: #4a90e2;
 }
 
 h1 {
-  font-size: 14px;
+  font-size: 13px;
   margin: 0;
-  font-weight: 800;
-  letter-spacing: 2px;
-  text-shadow: 0 0 10px #00f2ff66;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+  color: #4a90e2;
 }
 
 .scan-btn {
-  background: transparent;
-  border: 1px solid #00f2ff;
-  color: #00f2ff;
-  padding: 6px 16px;
+  background: #4a90e2;
+  border: none;
+  color: #fff;
+  padding: 5px 12px;
   font-size: 11px;
-  font-weight: bold;
+  border-radius: 4px;
   cursor: pointer;
   display: flex;
   align-items: center;
-  gap: 8px;
-  transition: all 0.3s;
-  position: relative;
-  overflow: hidden;
+  gap: 6px;
+  transition: background 0.2s;
 }
 
 .scan-btn:hover:not(:disabled) {
-  background: #00f2ff22;
-  box-shadow: 0 0 15px #00f2ff44;
+  background: #357abd;
 }
 
 .scan-icon {
-  width: 10px;
-  height: 10px;
-  border: 2px solid #00f2ff;
+  width: 8px;
+  height: 8px;
+  border: 1.5px solid #fff;
   border-radius: 50%;
   border-top-color: transparent;
 }
@@ -442,51 +576,181 @@ h1 {
 
 .tabs {
   display: flex;
-  padding: 8px;
-  gap: 8px;
-  background: #111;
+  padding: 12px 16px 0;
+  background: #fff;
 }
 
 .tab-item {
   flex: 1;
-  background: #1a1a1a;
-  border: 1px solid #333;
   padding: 8px;
   color: #666;
-  cursor: pointer;
+  border-bottom: 2px solid transparent;
   display: flex;
-  justify-content: space-between;
+  justify-content: center;
   align-items: center;
-  font-size: 10px;
-  transition: all 0.3s;
+  gap: 8px;
+  font-size: 12px;
+  font-weight: 500;
 }
 
 .tab-item.active {
-  border-color: #00f2ff;
-  color: #00f2ff;
-  background: #00f2ff11;
-  box-shadow: inset 0 0 10px #00f2ff22;
-}
-
-.tab-item.warning.active {
-  border-color: #ff0055;
-  color: #ff0055;
-  background: #ff005511;
+  color: #dc3545;
+  border-bottom-color: #dc3545;
 }
 
 .tab-count {
-  background: #000;
-  padding: 2px 6px;
-  border-radius: 2px;
-  font-size: 9px;
+  background: #f8d7da;
+  color: #dc3545;
+  padding: 1px 6px;
+  border-radius: 10px;
+  font-size: 10px;
+}
+
+.filter-bar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 12px 16px;
+  background: #fff;
+  border-bottom: 1px solid #eee;
+}
+
+.filter-item {
+  flex: 1;
+  min-width: calc(33.33% - 8px);
+  text-align: center;
+  white-space: nowrap;
+  padding: 6px 8px;
+  background: #f1f3f5;
+  border-radius: 16px;
+  font-size: 11px;
+  color: #666;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.filter-item.active {
+  background: #4a90e2;
+  color: #fff;
 }
 
 main {
   flex: 1;
   overflow-y: auto;
-  padding: 12px;
-  scrollbar-width: thin;
-  scrollbar-color: #00f2ff33 transparent;
+  padding: 16px;
+  position: relative;
+}
+
+.welcome-screen {
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+}
+
+.welcome-icon {
+  font-size: 48px;
+  margin-bottom: 16px;
+}
+
+.welcome-content h2 {
+  font-size: 18px;
+  margin-bottom: 8px;
+  color: #333;
+}
+
+.welcome-content p {
+  font-size: 13px;
+  color: #666;
+  margin-bottom: 24px;
+}
+
+.main-scan-btn {
+  background: #4a90e2;
+  color: #fff;
+  border: none;
+  padding: 12px 32px;
+  font-size: 14px;
+  font-weight: 600;
+  border-radius: 8px;
+  cursor: pointer;
+  box-shadow: 0 4px 12px rgba(74, 144, 226, 0.3);
+  transition: transform 0.2s, background 0.2s;
+}
+
+.main-scan-btn:hover {
+  background: #357abd;
+  transform: translateY(-1px);
+}
+
+.main-scan-btn:active {
+  transform: translateY(0);
+}
+
+.secondary-btn {
+  background: transparent;
+  border: 1px solid #dee2e6;
+  color: #6c757d;
+  padding: 8px 24px;
+  font-size: 12px;
+  font-weight: 600;
+  border-radius: 6px;
+  cursor: pointer;
+  margin-top: 12px;
+  width: 100%;
+  transition: all 0.2s;
+}
+
+.secondary-btn:hover {
+  background: #f8f9fa;
+  border-color: #ced4da;
+}
+
+.rescan-overlay {
+  position: absolute;
+  inset: 0;
+  background: rgba(255, 255, 255, 0.9);
+  backdrop-filter: blur(4px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1500;
+  padding: 24px;
+}
+
+.rescan-card {
+  background: #fff;
+  padding: 32px 24px;
+  border-radius: 16px;
+  box-shadow: 0 10px 25px rgba(0,0,0,0.1);
+  text-align: center;
+  border: 1px solid #eee;
+  max-width: 280px;
+}
+
+.rescan-icon {
+  font-size: 40px;
+  margin-bottom: 16px;
+  animation: rotate 4s linear infinite;
+}
+
+.rescan-card h3 {
+  font-size: 16px;
+  margin-bottom: 8px;
+  color: #333;
+}
+
+.rescan-card p {
+  font-size: 12px;
+  color: #666;
+  margin-bottom: 24px;
+  line-height: 1.6;
+}
+
+.rescan-card .main-scan-btn {
+  width: 100%;
+  padding: 10px;
 }
 
 .element-list {
@@ -495,185 +759,156 @@ main {
   margin: 0;
   display: flex;
   flex-direction: column;
-  gap: 16px;
+  gap: 12px;
 }
 
 .element-item {
-  background: #111;
-  border: 1px solid #222;
+  background: #fff;
+  border: 1px solid #eee;
+  border-radius: 8px;
   padding: 12px;
-  position: relative;
-  transition: all 0.3s;
+  transition: box-shadow 0.2s;
   cursor: pointer;
 }
 
 .element-item:hover {
-  border-color: #00f2ff66;
-  background: #161616;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.05);
 }
 
 .element-item.is-unused {
-  border-left: 2px solid #ff0055;
+  border-left: 4px solid #dc3545;
 }
 
 .element-header {
   display: flex;
   align-items: center;
-  gap: 10px;
-  margin-bottom: 12px;
+  gap: 8px;
+  margin-bottom: 10px;
 }
 
 .tag-badge {
-  background: #00f2ff22;
-  color: #00f2ff;
+  background: #e9ecef;
+  color: #495057;
   padding: 2px 6px;
   font-size: 10px;
-  font-weight: bold;
-  border: 1px solid #00f2ff44;
+  font-weight: 700;
+  border-radius: 4px;
 }
 
 .class-name {
-  color: #888;
-  font-size: 10px;
+  color: #6c757d;
+  font-size: 11px;
+  flex: 1;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  max-width: 100px;
 }
 
-.view-btn {
-  background: #ff005522;
-  border: 1px solid #ff0055;
-  color: #ff0055;
-  font-size: 9px;
-  padding: 2px 8px;
+.view-btn, .screenshot-btn {
+  background: #f8d7da;
+  border: none;
+  color: #dc3545;
+  font-size: 10px;
+  padding: 3px 8px;
+  border-radius: 4px;
   cursor: pointer;
-  transition: all 0.3s;
+  transition: all 0.2s;
 }
 
-.view-btn:hover {
-  background: #ff005544;
+.view-btn:hover, .screenshot-btn:hover {
+  background: #f1b0b7;
 }
 
 .view-btn.active {
-  background: #ff0055;
+  background: #dc3545;
   color: #fff;
 }
 
-.tech-line {
-  flex: 1;
-  height: 1px;
-  background: linear-gradient(90deg, #00f2ff33 0%, transparent 100%);
+.screenshot-btn {
+  background: #e2e3e5;
+  color: #383d41;
+}
+
+.screenshot-btn:hover {
+  background: #d6d8db;
 }
 
 .prop-group {
-  margin-bottom: 12px;
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid #f8f9fa;
 }
 
 .group-header {
-  font-size: 9px;
-  color: #00f2ff88;
+  font-size: 10px;
+  font-weight: 600;
+  color: #adb5bd;
   margin-bottom: 6px;
   text-transform: uppercase;
-  letter-spacing: 1px;
-  display: flex;
-  align-items: center;
+}
+
+.hardcoded-grid {
+  display: grid;
+  grid-template-columns: 1fr;
   gap: 6px;
 }
 
-.group-header::after {
-  content: '';
-  flex: 1;
-  height: 1px;
-  background: #00f2ff11;
-}
-
-.group-header.warning {
-  color: #ff005588;
-}
-
-.token-grid, .hardcoded-grid {
-  display: grid;
-  grid-template-columns: 1fr;
-  gap: 4px;
-}
-
-.token-badge, .hardcoded-badge {
+.hardcoded-badge {
   display: flex;
   align-items: center;
   gap: 8px;
-  background: #000;
-  padding: 6px;
-  border: 1px solid #222;
+  background: #f8f9fa;
+  padding: 6px 10px;
+  border-radius: 6px;
 }
 
 .color-preview {
-  width: 12px;
-  height: 12px;
-  border: 1px solid #333;
+  width: 14px;
+  height: 14px;
+  border-radius: 3px;
+  border: 1px solid rgba(0,0,0,0.1);
 }
 
 .type-icon {
-  font-size: 10px;
-  opacity: 0.6;
+  font-size: 12px;
 }
 
-.token-details, .hardcoded-details {
+.hardcoded-details {
   display: flex;
-  flex-direction: column;
-  min-width: 0;
-}
-
-.token-name, .prop-name {
-  font-size: 10px;
-  color: #00f2ff;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  justify-content: space-between;
+  flex: 1;
 }
 
 .prop-name {
-  color: #ff0055;
+  font-size: 11px;
+  color: #495057;
 }
 
-.token-value, .prop-value {
-  font-size: 9px;
-  color: #666;
-}
-
-.inherited-tag {
-  font-size: 8px;
-  background: #00f2ff22;
-  padding: 0 3px;
-  margin-left: 4px;
+.prop-value {
+  font-size: 11px;
+  color: #dc3545;
+  font-weight: 500;
 }
 
 /* Ancestor Topology */
 .ancestor-topology {
-  background: #000;
-  border: 1px dashed #ff005544;
+  background: #f8f9fa;
+  border-radius: 6px;
   padding: 10px;
   margin-bottom: 12px;
-  font-size: 10px;
 }
 
 .topology-title {
-  color: #ff0055;
-  font-size: 9px;
+  color: #6c757d;
+  font-size: 10px;
+  font-weight: 600;
   margin-bottom: 8px;
-  text-transform: uppercase;
-  opacity: 0.8;
 }
 
 .topology-list {
   display: flex;
   flex-direction: column;
-  gap: 4px;
-}
-
-.topology-item {
-  display: flex;
-  flex-direction: column;
+  gap: 2px;
 }
 
 .topology-node {
@@ -681,40 +916,35 @@ main {
   align-items: center;
   gap: 6px;
   padding: 4px 8px;
-  background: #1a1a1a;
-  border-left: 2px solid #ff0055;
+  background: #fff;
+  border: 1px solid #eee;
+  border-radius: 4px;
 }
 
 .node-tag {
-  color: #ff0055;
-  font-weight: bold;
+  color: #dc3545;
+  font-weight: 700;
+  font-size: 10px;
 }
 
 .node-class {
-  color: #888;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  color: #6c757d;
+  font-size: 10px;
 }
 
 .topology-connector {
-  padding-left: 12px;
-  height: 10px;
-  display: flex;
-  align-items: center;
+  padding-left: 15px;
+  height: 8px;
+  border-left: 1.5px dashed #dee2e6;
+  margin-left: 10px;
 }
 
-.connector-line {
-  width: 1px;
-  height: 100%;
-  background: #ff005544;
-}
-
-/* HUD Loader */
+/* Scanning Overlay */
 .scanning-overlay {
   position: absolute;
   inset: 0;
-  background: rgba(0, 0, 0, 0.9);
+  background: rgba(255, 255, 255, 0.8);
+  backdrop-filter: blur(4px);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -722,190 +952,164 @@ main {
 }
 
 .hud-loader {
-  position: relative;
-  width: 200px;
-  height: 200px;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-}
-
-.hud-circle {
-  position: absolute;
-  width: 120px;
-  height: 120px;
-  border: 2px solid #00f2ff22;
-  border-top-color: #00f2ff;
-  border-radius: 50%;
-  animation: rotate 2s linear infinite;
-}
-
-.hud-scanner {
-  position: absolute;
-  width: 140px;
-  height: 2px;
-  background: linear-gradient(90deg, transparent, #00f2ff, transparent);
-  animation: scan 2s ease-in-out infinite;
-}
-
-.hud-text {
-  margin-top: 160px;
   text-align: center;
 }
 
-.glitch {
-  font-size: 12px;
-  font-weight: bold;
-  position: relative;
-  display: inline-block;
+.hud-circle {
+  width: 40px;
+  height: 40px;
+  border: 3px solid #e9ecef;
+  border-top-color: #4a90e2;
+  border-radius: 50%;
+  margin: 0 auto 16px;
+  animation: rotate 1s linear infinite;
 }
 
-.hud-progress {
-  width: 120px;
-  height: 2px;
-  background: #111;
-  margin: 8px auto;
-  overflow: hidden;
+.hud-text {
+  font-size: 13px;
+  color: #4a90e2;
+  font-weight: 600;
 }
-
-.hud-bar {
-  width: 40%;
-  height: 100%;
-  background: #00f2ff;
-  animation: progress 1.5s ease-in-out infinite;
-}
-
-.hud-sub {
-  font-size: 8px;
-  opacity: 0.5;
-}
-
-.hud-corners span {
-  position: absolute;
-  width: 15px;
-  height: 15px;
-  border: 1px solid #00f2ff;
-}
-
-.hud-corners span:nth-child(1) { top: 0; left: 0; border-right: 0; border-bottom: 0; }
-.hud-corners span:nth-child(2) { top: 0; right: 0; border-left: 0; border-bottom: 0; }
-.hud-corners span:nth-child(3) { bottom: 0; left: 0; border-right: 0; border-top: 0; }
-.hud-corners span:nth-child(4) { bottom: 0; right: 0; border-left: 0; border-top: 0; }
 
 @keyframes rotate {
   from { transform: rotate(0deg); }
   to { transform: rotate(360deg); }
 }
 
-@keyframes scan {
-  0%, 100% { transform: translateY(-60px); opacity: 0; }
-  50% { transform: translateY(60px); opacity: 1; }
-}
-
-@keyframes progress {
-  0% { transform: translateX(-100%); }
-  100% { transform: translateX(250%); }
-}
-
-.fade-enter-active, .fade-leave-active { transition: opacity 0.5s; }
-.fade-enter-from, .fade-leave-to { opacity: 0; }
-
 .status-card {
-  padding: 40px 20px;
+  padding: 48px 24px;
   text-align: center;
-  border: 1px solid #222;
-  background: #111;
+  background: #fff;
+  border-radius: 12px;
+  border: 1px solid #eee;
 }
 
-.tech-error-icon, .tech-empty-icon, .tech-success-icon {
-  font-size: 32px;
-  margin-bottom: 16px;
-}
-
-.tech-error-icon { color: #ff0055; }
-.tech-success-icon { color: #00f2ff; }
+.tech-success-icon { color: #28a745; font-size: 40px; margin-bottom: 16px; }
+.tech-empty-icon { color: #adb5bd; font-size: 40px; margin-bottom: 16px; }
+.tech-error-icon { color: #dc3545; font-size: 40px; margin-bottom: 16px; }
 
 .retry-btn {
-  background: #ff0055;
+  background: #dc3545;
   color: #fff;
   border: none;
-  padding: 8px 20px;
-  font-size: 10px;
-  font-weight: bold;
+  padding: 8px 24px;
+  border-radius: 6px;
+  font-size: 12px;
+  font-weight: 600;
   margin-top: 16px;
   cursor: pointer;
 }
 
-.toast-overlay {
-  position: absolute;
-  bottom: 20px;
-  left: 20px;
-  right: 20px;
-  z-index: 2000;
-  display: flex;
-  justify-content: center;
-  pointer-events: none;
-}
-
-.toast-content {
-  background: rgba(255, 0, 85, 0.9);
-  color: white;
-  padding: 10px 16px;
-  border-radius: 4px;
-  font-size: 11px;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  box-shadow: 0 4px 15px rgba(0, 0, 0, 0.5);
-  border: 1px solid rgba(255, 255, 255, 0.2);
-  backdrop-filter: blur(4px);
-  pointer-events: auto;
-}
-
-.toast-icon {
-  font-size: 14px;
-}
-
 .frame-group {
-  margin-bottom: 24px;
+  margin-bottom: 20px;
 }
 
 .frame-header {
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 8px 12px;
-  background: #1a1a1a;
-  border: 1px solid #333;
-  border-left: 3px solid #00f2ff;
-  margin-bottom: 12px;
-  position: sticky;
-  top: 0;
-  z-index: 10;
+  padding: 8px 0;
+  margin-bottom: 8px;
+  border-bottom: 1px solid #eee;
 }
 
-.frame-icon {
-  color: #00f2ff;
-  font-size: 14px;
+.frame-icon { color: #adb5bd; font-size: 12px; }
+.frame-title { color: #495057; font-weight: 600; font-size: 11px; flex: 1; }
+.frame-count { color: #adb5bd; font-size: 11px; }
+
+.toast-overlay {
+  position: absolute;
+  bottom: 24px;
+  left: 16px;
+  right: 16px;
+  z-index: 2000;
 }
 
-.frame-title {
+.toast-content {
+  background: #343a40;
   color: #fff;
-  font-weight: bold;
-  font-size: 11px;
-  flex: 1;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  padding: 10px 16px;
+  border-radius: 8px;
+  font-size: 12px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.15);
 }
 
-.frame-count {
-  background: #00f2ff22;
-  color: #00f2ff;
-  padding: 2px 6px;
-  border-radius: 2px;
-  font-size: 9px;
-  font-weight: bold;
+/* Modal Styles */
+.screenshot-modal {
+  position: absolute;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.7);
+  backdrop-filter: blur(4px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 2000;
+  padding: 20px;
+}
+
+.modal-content {
+  background: #fff;
+  border-radius: 12px;
+  width: 100%;
+  max-height: 90vh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  box-shadow: 0 20px 50px rgba(0,0,0,0.3);
+}
+
+.modal-header {
+  padding: 12px 16px;
+  border-bottom: 1px solid #eee;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.modal-header h3 {
+  margin: 0;
+  font-size: 14px;
+  color: #333;
+}
+
+.close-btn {
+  background: none;
+  border: none;
+  font-size: 20px;
+  color: #999;
+  cursor: pointer;
+}
+
+.modal-body {
+  flex: 1;
+  overflow: auto;
+  padding: 12px;
+  background: #f8f9fa;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+}
+
+.modal-body img {
+  max-width: 100%;
+  border: 1px solid #ddd;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.1);
+}
+
+.modal-footer {
+  padding: 12px 16px;
+  border-top: 1px solid #eee;
+  display: flex;
+  gap: 12px;
+}
+
+.modal-footer .secondary-btn, .modal-footer .main-scan-btn {
+  margin: 0;
+  flex: 1;
+  padding: 8px;
+  font-size: 12px;
 }
 </style>

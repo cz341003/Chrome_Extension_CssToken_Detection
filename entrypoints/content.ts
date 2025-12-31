@@ -279,6 +279,51 @@ export default defineContentScript({
         sendResponse({ ancestors });
         return true;
       }
+
+      if (message.type === 'GET_ELEMENT_RECT') {
+        const getRect = (win: Window, id: string): any | null => {
+          let doc: Document;
+          try { doc = win.document; } catch (e) { return null; }
+          const el = doc.querySelector(`[data-css-token-id="${id}"], #${id}`);
+          if (el instanceof HTMLElement) {
+            el.scrollIntoView({ behavior: 'instant', block: 'center' });
+            const rect = el.getBoundingClientRect();
+            return {
+              x: rect.left,
+              y: rect.top,
+              width: rect.width,
+              height: rect.height,
+              dpr: win.devicePixelRatio
+            };
+          }
+          const iframes = doc.querySelectorAll('iframe');
+          for (const iframe of Array.from(iframes)) {
+            try {
+              if (iframe.contentWindow) {
+                const res = getRect(iframe.contentWindow, id);
+                if (res) {
+                  // 如果在 iframe 中，需要加上 iframe 自身的偏移
+                  const iframeRect = iframe.getBoundingClientRect();
+                  return {
+                    x: res.x + iframeRect.left,
+                    y: res.y + iframeRect.top,
+                    width: res.width,
+                    height: res.height,
+                    dpr: win.devicePixelRatio
+                  };
+                }
+              }
+            } catch (e) {}
+          }
+          return null;
+        };
+        // 延迟一小会儿确保滚动完成
+        setTimeout(() => {
+          const rect = getRect(window, message.id);
+          sendResponse({ rect });
+        }, 100);
+        return true;
+      }
     });
 
     // 监听 iframe 状态变化

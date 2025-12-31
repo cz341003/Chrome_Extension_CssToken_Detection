@@ -31,4 +31,20 @@ export default defineBackground(() => {
       // 忽略侧边栏未打开时的错误
     });
   });
+
+  // 监听截图请求
+  browser.runtime.onMessage.addListener((message, sender, sendResponse) => {
+    if (message.type === 'CAPTURE_TAB') {
+      // @ts-ignore - WXT/Browser types might vary, but captureVisibleTab can take null/undefined for current window
+      browser.tabs.captureVisibleTab(null, { format: 'png' })
+        .then(dataUrl => {
+          sendResponse({ dataUrl });
+        })
+        .catch(err => {
+          console.error('Capture failed:', err);
+          sendResponse({ error: err.message });
+        });
+      return true;
+    }
+  });
 });
