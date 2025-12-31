@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted, computed } from 'vue';
+import { ref, onMounted, onUnmounted, computed, watch } from 'vue';
 
 interface Token {
   property: string;
@@ -54,7 +54,20 @@ const filteredUnusedElements = computed(() => {
 const scanning = ref(false);
 const error = ref<string | null>(null);
 const activeTab = ref<'unused'>('unused');
+const activeFrameId = ref<string>('');
 const mainScrollContainer = ref<HTMLElement | null>(null);
+
+// 监听过滤后的元素变化，确保选中的 frame 有效
+watch(filteredUnusedElements, (newGroups) => {
+  const frames = Object.keys(newGroups);
+  if (frames.length > 0) {
+    if (!activeFrameId.value || !frames.includes(activeFrameId.value)) {
+      activeFrameId.value = frames[0];
+    }
+  } else {
+    activeFrameId.value = '';
+  }
+}, { immediate: true });
 const showToast = ref(false);
 const toastMessage = ref('');
 const selectedElementAncestors = ref<any[] | null>(null);
@@ -64,6 +77,13 @@ const showScreenshotModal = ref(false);
 
 const switchTab = (tab: 'unused') => {
   activeTab.value = tab;
+  if (mainScrollContainer.value) {
+    mainScrollContainer.value.scrollTop = 0;
+  }
+};
+
+const switchFrame = (frameId: string) => {
+  activeFrameId.value = frameId;
   if (mainScrollContainer.value) {
     mainScrollContainer.value.scrollTop = 0;
   }
@@ -337,16 +357,6 @@ const downloadScreenshot = () => {
     </div>
 
     <main ref="mainScrollContainer">
-      <div v-if="needsRescan" class="rescan-overlay">
-        <div class="rescan-card">
-          <div class="rescan-icon">🔄</div>
-          <h3>检测到页面更新</h3>
-          <p>页面内容或路由已发生变化，建议重新扫描以获取准确结果。</p>
-          <button @click="scanTokens" class="main-scan-btn">立即重新扫描</button>
-          <button @click="needsRescan = false" class="secondary-btn">稍后处理</button>
-        </div>
-      </div>
-
       <div v-if="!hasScanned" class="welcome-screen">
         <div class="welcome-content">
           <div class="welcome-icon">🔍</div>
@@ -378,75 +388,102 @@ const downloadScreenshot = () => {
             <p>当前分类下未发现硬编码属性。</p>
           </div>
           <div v-else class="results">
-            <div v-for="(elements, frameId) in filteredUnusedElements" :key="frameId" class="frame-group">
-              <div class="frame-header">
-                <span class="frame-icon">▤</span>
-                <span class="frame-title">{{ frameId }}</span>
-                <span class="frame-count">{{ elements.length }}</span>
+            <!-- Iframe Tabs -->
+            <div class="frame-tabs" v-if="Object.keys(filteredUnusedElements).length > 1">
+              <div 
+                v-for="(_, frameId) in filteredUnusedElements" 
+                :key="frameId"
+                class="frame-tab-item"
+                :class="{ active: activeFrameId === frameId || (!activeFrameId && frameId === Object.keys(filteredUnusedElements)[0]) }"
+                @click="switchFrame(frameId)"
+              >
+                <span class="frame-tab-title">{{ frameId }}</span>
+                <span class="frame-tab-count">{{ filteredUnusedElements[frameId].length }}</span>
               </div>
-              <ul class="element-list">
-                <li 
-                  v-for="el in elements" 
-                  :key="el.id" 
-                  class="element-item is-unused" 
-                  @click="highlightElement(el.id, true)"
-                >
-                  <div class="element-header">
-                    <div class="tag-badge">{{ el.tagName }}</div>
-                    <span v-if="el.className" class="class-name" :title="el.className">
-                      .{{ el.className.split(' ').filter(c => c).join('.') }}
-                    </span>
-                    <div class="tech-line"></div>
-                    <button class="view-btn" @click="viewAncestors(el.id, $event)" :class="{ active: viewingAncestorsId === el.id }">
-                      结构
-                    </button>
-                    <button class="screenshot-btn" @click.stop="handleScreenshotClick(el.id)">
-                      截图
-                    </button>
-                  </div>
+            </div>
 
-                  <!-- 祖先拓扑展示 -->
-                  <div v-if="viewingAncestorsId === el.id && selectedElementAncestors" class="ancestor-topology">
-                    <div class="topology-title">结构拓扑 (从当前到祖先)</div>
-                    <div class="topology-list">
-                      <div v-for="(ancestor, index) in selectedElementAncestors" :key="index" class="topology-item">
-                        <div class="topology-node">
-                          <span class="node-tag">{{ ancestor.tagName }}</span>
-                          <span v-if="ancestor.className" class="node-class" :title="ancestor.className">
-                            .{{ ancestor.className.split(' ').filter((c: any) => c).join('.') }}
-                          </span>
-                        </div>
-                        <div v-if="index < selectedElementAncestors.length - 1" class="topology-connector">
-                          <div class="connector-line"></div>
-                        </div>
-                      </div>
+            <div v-for="(elements, frameId) in filteredUnusedElements" :key="frameId">
+              <div v-if="activeFrameId === frameId" class="frame-group">
+                <div class="frame-header" v-if="Object.keys(filteredUnusedElements).length === 1">
+                  <span class="frame-icon">▤</span>
+                  <span class="frame-title">{{ frameId }}</span>
+                  <span class="frame-count">{{ elements.length }}</span>
+                </div>
+                <ul class="element-list">
+                  <li 
+                    v-for="el in elements" 
+                    :key="el.id" 
+                    class="element-item is-unused" 
+                    @click="highlightElement(el.id, true)"
+                  >
+                    <div class="element-header">
+                      <div class="tag-badge">{{ el.tagName }}</div>
+                      <span v-if="el.className" class="class-name" :title="el.className">
+                        .{{ el.className.split(' ').filter(c => c).join('.') }}
+                      </span>
+                      <div class="tech-line"></div>
+                      <button class="view-btn" @click="viewAncestors(el.id, $event)" :class="{ active: viewingAncestorsId === el.id }">
+                        结构
+                      </button>
+                      <button class="screenshot-btn" @click.stop="handleScreenshotClick(el.id)">
+                        截图
+                      </button>
                     </div>
-                  </div>
 
-                  <div class="group-container">
-                    <div v-for="(items, group) in groupHardcoded(el.hardcoded || [])" :key="group" class="prop-group">
-                      <div class="group-header warning">{{ getGroupLabel(group) }}</div>
-                      <div class="hardcoded-grid">
-                        <div v-for="item in items" :key="item.property" class="hardcoded-badge">
-                          <div v-if="getTokenType(item.value) === 'color'" class="color-preview" :style="{ backgroundColor: item.value }"></div>
-                          <div v-else class="type-icon">{{ getTokenIcon(getTokenType(item.value)) }}</div>
-                          <div class="hardcoded-details">
-                            <span class="prop-name">{{ item.property }}</span>
-                            <span class="prop-value">{{ item.value }}</span>
+                    <!-- 祖先拓扑展示 -->
+                    <div v-if="viewingAncestorsId === el.id && selectedElementAncestors" class="ancestor-topology">
+                      <div class="topology-title">结构拓扑 (从当前到祖先)</div>
+                      <div class="topology-list">
+                        <div v-for="(ancestor, index) in selectedElementAncestors" :key="index" class="topology-item">
+                          <div class="topology-node">
+                            <span class="node-tag">{{ ancestor.tagName }}</span>
+                            <span v-if="ancestor.className" class="node-class" :title="ancestor.className">
+                              .{{ ancestor.className.split(' ').filter((c: any) => c).join('.') }}
+                            </span>
+                          </div>
+                          <div v-if="index < selectedElementAncestors.length - 1" class="topology-connector">
+                            <div class="connector-line"></div>
                           </div>
                         </div>
                       </div>
                     </div>
-                  </div>
-                </li>
-              </ul>
+
+                    <div class="group-container">
+                      <div v-for="(items, group) in groupHardcoded(el.hardcoded || [])" :key="group" class="prop-group">
+                        <div class="group-header warning">{{ getGroupLabel(group) }}</div>
+                        <div class="hardcoded-grid">
+                          <div v-for="item in items" :key="item.property" class="hardcoded-badge">
+                            <div v-if="getTokenType(item.value) === 'color'" class="color-preview" :style="{ backgroundColor: item.value }"></div>
+                            <div v-else class="type-icon">{{ getTokenIcon(getTokenType(item.value)) }}</div>
+                            <div class="hardcoded-details">
+                              <span class="prop-name">{{ item.property }}</span>
+                              <span class="prop-value">{{ item.value }}</span>
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  </li>
+                </ul>
+              </div>
             </div>
           </div>
         </div>
-
       </div>
     </main>
     
+    <Transition name="fade">
+      <div v-if="needsRescan" class="rescan-overlay">
+        <div class="rescan-card">
+          <div class="rescan-icon">🔄</div>
+          <h3>检测到页面更新</h3>
+          <p>页面内容或路由已发生变化，建议重新扫描以获取准确结果。</p>
+          <button @click="scanTokens" class="main-scan-btn">立即重新扫描</button>
+          <button @click="needsRescan = false" class="secondary-btn">稍后处理</button>
+        </div>
+      </div>
+    </Transition>
+
     <Transition name="fade">
       <div v-if="showToast" class="toast-overlay">
         <div class="toast-content">
@@ -497,6 +534,7 @@ const downloadScreenshot = () => {
 
 <style scoped>
 .container {
+  position: relative;
   display: flex;
   flex-direction: column;
   height: 100vh;
@@ -1017,6 +1055,63 @@ main {
 .frame-icon { color: #adb5bd; font-size: 12px; }
 .frame-title { color: #495057; font-weight: 600; font-size: 11px; flex: 1; }
 .frame-count { color: #adb5bd; font-size: 11px; }
+
+/* Frame Tabs Styles */
+.frame-tabs {
+  display: flex;
+  overflow-x: auto;
+  gap: 8px;
+  padding: 4px 0 12px;
+  margin-bottom: 12px;
+  border-bottom: 1px solid #eee;
+  scrollbar-width: none; /* Firefox */
+}
+
+.frame-tabs::-webkit-scrollbar {
+  display: none; /* Chrome, Safari, Opera */
+}
+
+.frame-tab-item {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  background: #f1f3f5;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: all 0.2s;
+  border: 1px solid transparent;
+}
+
+.frame-tab-item.active {
+  background: #fff;
+  border-color: #4a90e2;
+  color: #4a90e2;
+  box-shadow: 0 2px 4px rgba(74, 144, 226, 0.1);
+}
+
+.frame-tab-title {
+  font-size: 11px;
+  font-weight: 600;
+  max-width: 120px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.frame-tab-count {
+  font-size: 10px;
+  background: rgba(0, 0, 0, 0.05);
+  padding: 1px 5px;
+  border-radius: 10px;
+  color: #666;
+}
+
+.frame-tab-item.active .frame-tab-count {
+  background: rgba(74, 144, 226, 0.1);
+  color: #4a90e2;
+}
 
 .toast-overlay {
   position: absolute;
