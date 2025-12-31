@@ -183,11 +183,11 @@ onUnmounted(() => {
 
 // 属性分组逻辑
 const PROPERTY_GROUPS = {
-  font: ['font-size', 'font-weight', 'font-family', 'line-height', 'letter-spacing', 'color', 'text-align'],
+  font: ['font-size', 'font-weight', 'font-family', 'letter-spacing', 'color', 'text-align'],
   spacing: ['margin', 'padding', 'margin-top', 'margin-right', 'margin-bottom', 'margin-left', 'padding-top', 'padding-right', 'padding-bottom', 'padding-left', 'gap'],
   border: ['border', 'border-width', 'border-style', 'border-color', 'border-radius', 'outline'],
   shadow: ['box-shadow', 'text-shadow'],
-  layout: ['width', 'height', 'display', 'position', 'top', 'right', 'bottom', 'left', 'z-index'],
+  layout: ['width', 'height', 'line-height', 'display', 'position', 'top', 'right', 'bottom', 'left', 'z-index'],
   background: ['background', 'background-color', 'background-image']
 };
 
