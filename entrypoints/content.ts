@@ -3,6 +3,15 @@ export default defineContentScript({
   main() {
     console.log('CSS Token Detector Content Script Loaded');
 
+    // 用于管理高亮状态，防止多次点击导致样式无法恢复
+    const highlightState = new WeakMap<HTMLElement, {
+      originalOutline: string;
+      originalOutlineOffset: string;
+      originalBoxShadow: string;
+      originalZIndex: string;
+      timer: any;
+    }>();
+
     browser.runtime.onMessage.addListener((message, sender, sendResponse) => {
       if (message.type === 'SCAN_TOKENS') {
         // 优化：只关注未使用变量的元素，并增加 frameId 标识
@@ -204,15 +213,30 @@ export default defineContentScript({
         const findAndHighlight = (win: Window, id: string): { found: boolean; visible: boolean } => {
           let doc: Document;
           try { doc = win.document; } catch (e) { return { found: false, visible: false }; }
-          const el = doc.querySelector(`[data-css-token-id="${id}"], #${id}`);
+          
+          // 修复：数字开头的 ID 在 querySelector 中会报错，优先使用 getElementById
+          let el = doc.getElementById(id) || doc.querySelector(`[data-css-token-id="${id}"]`);
+          
           if (el instanceof HTMLElement) {
             const style = win.getComputedStyle(el);
             const isVisible = style.display !== 'none' && style.visibility !== 'hidden' && parseFloat(style.opacity) !== 0;
             
             if (isVisible) {
               el.scrollIntoView({ behavior: 'smooth', block: 'center' });
-              const oldOutline = el.style.outline;
-              const oldBoxShadow = el.style.boxShadow;
+              
+              // 如果已经在高亮中，先清除之前的定时器，并使用最初保存的样式
+              const existing = highlightState.get(el);
+              if (existing) {
+                clearTimeout(existing.timer);
+              }
+
+              const state = existing || {
+                originalOutline: el.style.outline,
+                originalOutlineOffset: el.style.outlineOffset,
+                originalBoxShadow: el.style.boxShadow,
+                originalZIndex: el.style.zIndex,
+                timer: null
+              };
               
               const highlightColor = message.isUnused ? '#ff5555' : '#ffff00';
               el.style.outline = `4px solid ${highlightColor}`;
@@ -220,10 +244,18 @@ export default defineContentScript({
               el.style.boxShadow = `0 0 20px ${highlightColor}, 0 0 40px ${highlightColor}`;
               el.style.zIndex = '2147483647';
               
-              setTimeout(() => {
-                el.style.outline = oldOutline;
-                el.style.boxShadow = oldBoxShadow;
+              state.timer = setTimeout(() => {
+                const s = highlightState.get(el);
+                if (s) {
+                  el.style.outline = s.originalOutline;
+                  el.style.outlineOffset = s.originalOutlineOffset;
+                  el.style.boxShadow = s.originalBoxShadow;
+                  el.style.zIndex = s.originalZIndex;
+                  highlightState.delete(el);
+                }
               }, 2000);
+
+              highlightState.set(el, state);
             }
             return { found: true, visible: isVisible };
           }
@@ -247,7 +279,9 @@ export default defineContentScript({
         const findAncestors = (win: Window, id: string): any[] | null => {
           let doc: Document;
           try { doc = win.document; } catch (e) { return null; }
-          const el = doc.querySelector(`[data-css-token-id="${id}"], #${id}`);
+          
+          let el = doc.getElementById(id) || doc.querySelector(`[data-css-token-id="${id}"]`);
+          
           if (el) {
             const ancestors = [];
             let current: Element | null = el;
@@ -284,10 +318,25 @@ export default defineContentScript({
         const getRect = (win: Window, id: string): any | null => {
           let doc: Document;
           try { doc = win.document; } catch (e) { return null; }
-          const el = doc.querySelector(`[data-css-token-id="${id}"], #${id}`);
+          
+          let el = doc.getElementById(id) || doc.querySelector(`[data-css-token-id="${id}"]`);
+          
           if (el instanceof HTMLElement) {
+            const style = win.getComputedStyle(el);
+            const isVisible = style.display !== 'none' && style.visibility !== 'hidden' && parseFloat(style.opacity) !== 0;
+            
+            if (!isVisible) return null;
+
             el.scrollIntoView({ behavior: 'instant', block: 'center' });
             const rect = el.getBoundingClientRect();
+            
+            // 检查滚动后是否在视口内
+            if (rect.width === 0 || rect.height === 0 || 
+                rect.bottom < 0 || rect.top > win.innerHeight || 
+                rect.right < 0 || rect.left > win.innerWidth) {
+              return null;
+            }
+
             return {
               x: rect.left,
               y: rect.top,

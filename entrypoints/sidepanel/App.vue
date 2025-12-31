@@ -237,9 +237,10 @@ const handleScreenshotClick = async (id: string) => {
     // 1. 获取元素坐标
     const rectRes = await browser.tabs.sendMessage(tab.id, { type: 'GET_ELEMENT_RECT', id });
     if (!rectRes?.rect) {
-      toastMessage.value = '无法获取元素位置，请确保元素在页面上可见。';
+      toastMessage.value = '该元素不在可视区域内，无法截图。';
       showToast.value = true;
       setTimeout(() => showToast.value = false, 3000);
+      scanning.value = false;
       return;
     }
 
