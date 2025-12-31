@@ -528,6 +528,20 @@ const downloadScreenshot = () => {
       </div>
     </div>
 
+    <!-- Iframe Tabs (Fixed at top) -->
+    <div class="frame-tabs" v-if="hasScanned && !scanning && !error && activeTab === 'unused'">
+      <div 
+        v-for="(_, frameId) in filteredUnusedElements" 
+        :key="frameId"
+        class="frame-tab-item"
+        :class="{ active: activeFrameId === frameId || (!activeFrameId && frameId === Object.keys(filteredUnusedElements)[0]) }"
+        @click="switchFrame(frameId)"
+      >
+        <span class="frame-tab-title">{{ frameId }}</span>
+        <span class="frame-tab-count">{{ filteredUnusedElements[frameId].length }}</span>
+      </div>
+    </div>
+
     <main ref="mainScrollContainer">
       <div v-if="!hasScanned" class="welcome-screen">
         <div class="welcome-content">
@@ -560,20 +574,6 @@ const downloadScreenshot = () => {
             <p>当前分类下未发现硬编码属性。</p>
           </div>
           <div v-else class="results">
-            <!-- Iframe Tabs -->
-            <div class="frame-tabs" v-if="Object.keys(filteredUnusedElements).length > 1">
-              <div 
-                v-for="(_, frameId) in filteredUnusedElements" 
-                :key="frameId"
-                class="frame-tab-item"
-                :class="{ active: activeFrameId === frameId || (!activeFrameId && frameId === Object.keys(filteredUnusedElements)[0]) }"
-                @click="switchFrame(frameId)"
-              >
-                <span class="frame-tab-title">{{ frameId }}</span>
-                <span class="frame-tab-count">{{ filteredUnusedElements[frameId].length }}</span>
-              </div>
-            </div>
-
             <div v-for="(elements, frameId) in filteredUnusedElements" :key="frameId">
               <div v-if="activeFrameId === frameId" class="frame-group">
                 <div class="frame-header" v-if="Object.keys(filteredUnusedElements).length === 1">
@@ -593,13 +593,14 @@ const downloadScreenshot = () => {
                       <span v-if="el.className" class="class-name" :title="el.className">
                         .{{ el.className.split(' ').filter(c => c).join('.') }}
                       </span>
-                      <div class="tech-line"></div>
-                      <button class="view-btn" @click="viewAncestors(el.id, $event)" :class="{ active: viewingAncestorsId === el.id }">
-                        结构
-                      </button>
-                      <button class="screenshot-btn" @click.stop="handleScreenshotClick(el.id)">
-                        截图
-                      </button>
+                      <div class="element-actions">
+                        <button class="view-btn" @click="viewAncestors(el.id, $event)" :class="{ active: viewingAncestorsId === el.id }">
+                          结构
+                        </button>
+                        <button class="screenshot-btn" @click.stop="handleScreenshotClick(el.id)">
+                          截图
+                        </button>
+                      </div>
                     </div>
 
                     <!-- 祖先拓扑展示 -->
@@ -1045,6 +1046,7 @@ main {
       font-size: 10px;
       font-weight: 700;
       border-radius: 4px;
+      flex-shrink: 0;
     }
 
     .class-name {
@@ -1054,34 +1056,44 @@ main {
       white-space: nowrap;
       overflow: hidden;
       text-overflow: ellipsis;
+      min-width: 0;
     }
 
-    .view-btn, .screenshot-btn {
-      background: @error-bg;
-      border: none;
-      color: @error-color;
-      font-size: 10px;
-      padding: 3px 8px;
-      border-radius: 4px;
-      cursor: pointer;
-      transition: all 0.2s;
+    .element-actions {
+      display: flex;
+      gap: 6px;
+      margin-left: auto;
+      flex-shrink: 0;
 
-      &:hover {
-        background: #f1b0b7;
+      .view-btn,
+      .screenshot-btn {
+        background: @error-bg;
+        border: none;
+        color: @error-color;
+        font-size: 10px;
+        padding: 3px 8px;
+        border-radius: 4px;
+        cursor: pointer;
+        transition: all 0.2s;
+        white-space: nowrap;
+
+        &:hover {
+          background: #f1b0b7;
+        }
+
+        &.active {
+          background: @error-color;
+          color: #fff;
+        }
       }
 
-      &.active {
-        background: @error-color;
-        color: #fff;
-      }
-    }
+      .screenshot-btn {
+        background: #e2e3e5;
+        color: #383d41;
 
-    .screenshot-btn {
-      background: #e2e3e5;
-      color: #383d41;
-
-      &:hover {
-        background: #d6d8db;
+        &:hover {
+          background: #d6d8db;
+        }
       }
     }
   }
@@ -1274,11 +1286,12 @@ main {
 
 /* Frame Tabs Styles */
 .frame-tabs {
+  z-index: 10;
+  background: #fff;
+  padding: 8px 16px 12px;
   display: flex;
   overflow-x: auto;
   gap: 8px;
-  padding: 4px 0 12px;
-  margin-bottom: 12px;
   border-bottom: 1px solid @border-color;
   scrollbar-width: none; /* Firefox */
 
