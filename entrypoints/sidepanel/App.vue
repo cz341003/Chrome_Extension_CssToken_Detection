@@ -22,6 +22,7 @@ interface DetectedElement {
   hardcoded?: Hardcoded[];
   isVisible?: boolean;
   frameId?: string;
+  selector?: string;
 }
 
 const usedElements = ref<DetectedElement[]>([]);
@@ -75,6 +76,10 @@ const viewingAncestorsId = ref<string | null>(null);
 const screenshotUrl = ref<string | null>(null);
 const showScreenshotModal = ref(false);
 
+const exporting = ref(false);
+const exportProgress = ref(0);
+const exportTotal = ref(0);
+
 const switchTab = (tab: 'unused') => {
   activeTab.value = tab;
   if (mainScrollContainer.value) {
@@ -92,12 +97,21 @@ const switchFrame = (frameId: string) => {
 const scanTokens = async () => {
   if (scanning.value) return;
   
+  // 如果正在导出，先停止导出
+  exporting.value = false;
+  exportProgress.value = 0;
+  
   scanning.value = true;
   error.value = null;
   hasScanned.value = true;
   needsRescan.value = false;
+  
+  // 立即清空旧数据，确保 UI 状态切换
+  unusedElements.value = [];
+  usedElements.value = [];
   selectedElementAncestors.value = null;
   viewingAncestorsId.value = null;
+
   try {
     const tabs = await browser.tabs.query({ active: true, currentWindow: true });
     const tab = tabs[0];
@@ -248,62 +262,217 @@ const groupHardcoded = (items: Hardcoded[]) => {
   return groups;
 };
 
+const captureElementScreenshot = async (id: string, crop: boolean = false): Promise<string | null> => {
+  const [tab] = await browser.tabs.query({ active: true, currentWindow: true });
+  if (!tab?.id) return null;
+
+  // 1. 获取元素坐标
+  const rectRes = await browser.tabs.sendMessage(tab.id, { type: 'GET_ELEMENT_RECT', id });
+  if (!rectRes?.rect) return null;
+
+  // 2. 捕获标签页截图
+  const capRes = await browser.runtime.sendMessage({ type: 'CAPTURE_TAB' });
+  if (capRes.error || !capRes.dataUrl) throw new Error(capRes.error || '截图失败');
+
+  // 3. Canvas 合成
+  const { x, y, width, height, dpr } = rectRes.rect;
+  
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => {
+      const canvas = document.createElement('canvas');
+      const ctx = canvas.getContext('2d');
+      if (!ctx) {
+        reject(new Error('Canvas context not available'));
+        return;
+      }
+
+      if (crop) {
+        // 裁剪模式：保留元素周围 100px 边距
+        const padding = 100 * dpr;
+        const sourceX = Math.max(0, x * dpr - padding);
+        const sourceY = Math.max(0, y * dpr - padding);
+        const sourceW = Math.min(img.width - sourceX, width * dpr + padding * 2);
+        const sourceH = Math.min(img.height - sourceY, height * dpr + padding * 2);
+
+        canvas.width = sourceW;
+        canvas.height = sourceH;
+        ctx.drawImage(img, sourceX, sourceY, sourceW, sourceH, 0, 0, sourceW, sourceH);
+        
+        // 在裁剪后的图中绘制红框
+        ctx.strokeStyle = '#dc3545';
+        ctx.lineWidth = 3 * dpr;
+        ctx.setLineDash([10 * dpr, 5 * dpr]);
+        ctx.strokeRect(x * dpr - sourceX, y * dpr - sourceY, width * dpr, height * dpr);
+      } else {
+        // 全屏模式
+        canvas.width = img.width;
+        canvas.height = img.height;
+        ctx.drawImage(img, 0, 0);
+        ctx.strokeStyle = '#dc3545';
+        ctx.lineWidth = 3 * dpr;
+        ctx.setLineDash([10 * dpr, 5 * dpr]);
+        ctx.strokeRect(x * dpr, y * dpr, width * dpr, height * dpr);
+      }
+      
+      resolve(canvas.toDataURL('image/png'));
+    };
+    img.onerror = () => reject(new Error('Image load failed'));
+    img.src = capRes.dataUrl;
+  });
+};
+
 const handleScreenshotClick = async (id: string) => {
   scanning.value = true;
   try {
-    const [tab] = await browser.tabs.query({ active: true, currentWindow: true });
-    if (!tab?.id) return;
-
-    // 1. 获取元素坐标
-    const rectRes = await browser.tabs.sendMessage(tab.id, { type: 'GET_ELEMENT_RECT', id });
-    if (!rectRes?.rect) {
+    const dataUrl = await captureElementScreenshot(id, false);
+    if (!dataUrl) {
       toastMessage.value = '该元素不在可视区域内，无法截图。';
       showToast.value = true;
       setTimeout(() => showToast.value = false, 3000);
-      scanning.value = false;
-      return;
-    }
-
-    // 2. 捕获标签页截图
-    const capRes = await browser.runtime.sendMessage({ type: 'CAPTURE_TAB' });
-    if (capRes.error || !capRes.dataUrl) {
-      throw new Error(capRes.error || '截图失败');
-    }
-
-    // 3. Canvas 合成
-    const { x, y, width, height, dpr } = rectRes.rect;
-    const canvas = document.createElement('canvas');
-    const ctx = canvas.getContext('2d');
-    if (!ctx) return;
-
-    const img = new Image();
-    img.onload = () => {
-      canvas.width = img.width;
-      canvas.height = img.height;
-      ctx.drawImage(img, 0, 0);
-      
-      // 绘制红框
-      ctx.strokeStyle = '#dc3545';
-      ctx.lineWidth = 3 * dpr;
-      ctx.setLineDash([10 * dpr, 5 * dpr]);
-      ctx.strokeRect(x * dpr, y * dpr, width * dpr, height * dpr);
-      
-      // 绘制半透明遮罩（可选，突出显示区域）
-      ctx.fillStyle = 'rgba(220, 53, 69, 0.1)';
-      ctx.fillRect(x * dpr, y * dpr, width * dpr, height * dpr);
-
-      screenshotUrl.value = canvas.toDataURL('image/png');
+    } else {
+      screenshotUrl.value = dataUrl;
       showScreenshotModal.value = true;
-      scanning.value = false;
-    };
-    img.src = capRes.dataUrl;
+    }
   } catch (e) {
     console.error('Screenshot failed:', e);
     toastMessage.value = '截图生成失败，请重试。';
     showToast.value = true;
     setTimeout(() => showToast.value = false, 3000);
+  } finally {
     scanning.value = false;
   }
+};
+
+const exportReport = async () => {
+  if (exporting.value || unusedElements.value.length === 0) return;
+  
+  exporting.value = true;
+  exportProgress.value = 0;
+  const targets = unusedElements.value.filter(el => el.isVisible !== false);
+  exportTotal.value = targets.length;
+
+  const reportData: any[] = [];
+
+  try {
+    for (let i = 0; i < targets.length; i++) {
+      // 检查是否已被取消（如触发了重新扫描）
+      if (!exporting.value) return;
+
+      const el = targets[i];
+      exportProgress.value = i + 1;
+      
+      try {
+        const screenshot = await captureElementScreenshot(el.id, true);
+        reportData.push({
+          ...el,
+          screenshot
+        });
+      } catch (e) {
+        console.warn(`Failed to capture screenshot for ${el.id}`, e);
+        reportData.push({
+          ...el,
+          screenshot: null
+        });
+      }
+      // 稍微停顿一下，让页面有时间响应滚动
+      await new Promise(r => setTimeout(r, 300));
+    }
+
+    if (!exporting.value) return;
+
+    // 生成 HTML 报告
+    const htmlContent = generateHTMLReport(reportData);
+    const blob = new Blob([htmlContent], { type: 'text/html' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `css-token-report-${new Date().toISOString().split('T')[0]}.html`;
+    link.click();
+    URL.revokeObjectURL(url);
+
+    toastMessage.value = '报告导出成功！';
+    showToast.value = true;
+    setTimeout(() => showToast.value = false, 3000);
+  } catch (e) {
+    console.error('Export failed:', e);
+    toastMessage.value = '导出失败，请重试。';
+    showToast.value = true;
+    setTimeout(() => showToast.value = false, 3000);
+  } finally {
+    exporting.value = false;
+  }
+};
+
+const generateHTMLReport = (data: any[]) => {
+  const itemsHtml = data.map(item => `
+    <div class="report-item">
+      <div class="item-info">
+        <div class="item-header">
+          <span class="tag">${item.tagName}</span>
+          <span class="class">${item.className ? '.' + item.className.split(' ').join('.') : ''}</span>
+          <span class="frame">Frame: ${item.frameId || 'Main Page'}</span>
+        </div>
+        <div class="item-selector">${item.selector || ''}</div>
+        <div class="props-list">
+          ${item.hardcoded.map((h: any) => `
+            <div class="prop-row">
+              <span class="prop-name">${h.property}</span>
+              <span class="prop-value">${h.value}</span>
+            </div>
+          `).join('')}
+        </div>
+      </div>
+      <div class="item-screenshot">
+        ${item.screenshot ? `<img src="${item.screenshot}" />` : '<div class="no-img">无法获取截图</div>'}
+      </div>
+    </div>
+  `).join('');
+
+  return `
+    <!DOCTYPE html>
+    <html>
+    <head>
+      <meta charset="UTF-8">
+      <title>CSS Token 扫描报告</title>
+      <style>
+        body { font-family: sans-serif; background: #f4f7f9; color: #333; margin: 0; padding: 40px; }
+        .container { max-width: 1000px; margin: 0 auto; }
+        header { margin-bottom: 40px; border-bottom: 2px solid #4a90e2; padding-bottom: 20px; }
+        h1 { color: #4a90e2; margin: 0; }
+        .summary { background: #fff; padding: 20px; border-radius: 8px; margin-bottom: 30px; box-shadow: 0 2px 10px rgba(0,0,0,0.05); }
+        .report-item { background: #fff; border-radius: 8px; margin-bottom: 20px; display: flex; overflow: hidden; box-shadow: 0 2px 10px rgba(0,0,0,0.05); }
+        .item-info { flex: 1; padding: 20px; }
+        .item-header { margin-bottom: 10px; display: flex; align-items: center; gap: 10px; }
+        .item-selector { font-size: 11px; color: #888; font-family: monospace; margin-bottom: 15px; word-break: break-all; background: #f8f9fa; padding: 4px 8px; border-radius: 4px; }
+        .tag { background: #e9ecef; padding: 2px 8px; border-radius: 4px; font-weight: bold; font-size: 12px; }
+        .class { color: #666; font-family: monospace; font-size: 13px; }
+        .frame { font-size: 11px; color: #999; margin-left: auto; }
+        .props-list { display: grid; gap: 8px; }
+        .prop-row { display: flex; justify-content: space-between; background: #f8f9fa; padding: 8px 12px; border-radius: 4px; font-size: 13px; }
+        .prop-name { color: #555; }
+        .prop-value { color: #dc3545; font-weight: bold; }
+        .item-screenshot { width: 400px; background: #eee; display: flex; align-items: center; justify-content: center; border-left: 1px solid #eee; }
+        .item-screenshot img { max-width: 100%; max-height: 300px; object-fit: contain; }
+        .no-img { color: #999; font-size: 12px; }
+      </style>
+    </head>
+    <body>
+      <div class="container">
+        <header>
+          <h1>CSS Token 扫描报告</h1>
+          <p>生成时间: ${new Date().toLocaleString()}</p>
+        </header>
+        <div class="summary">
+          <strong>检测概览：</strong> 共发现 ${data.length} 个包含硬编码属性的元素。
+        </div>
+        <div class="report-list">
+          ${itemsHtml}
+        </div>
+      </div>
+    </body>
+    </html>
+  `;
 };
 
 const downloadScreenshot = () => {
@@ -325,7 +494,10 @@ const downloadScreenshot = () => {
         <h1>CSS TOKEN DETECTOR</h1>
       </div>
       <div class="header-actions" v-if="hasScanned">
-        <button @click="scanTokens" :disabled="scanning" class="scan-btn" :class="{ 'is-scanning': scanning }">
+        <button @click="exportReport" :disabled="scanning || exporting || unusedElements.length === 0" class="export-btn">
+          导出报告
+        </button>
+        <button @click="scanTokens" :disabled="scanning || exporting" class="scan-btn" :class="{ 'is-scanning': scanning }">
           <span class="scan-icon"></span>
           {{ scanning ? '正在扫描...' : '重新扫描' }}
         </button>
@@ -512,16 +684,20 @@ const downloadScreenshot = () => {
     </Transition>
 
     <Transition name="fade">
-      <div v-if="scanning" class="scanning-overlay">
+      <div v-if="scanning || exporting" class="scanning-overlay">
         <div class="hud-loader">
           <div class="hud-circle"></div>
           <div class="hud-scanner"></div>
           <div class="hud-text">
-            <span class="glitch" data-text="正在扫描 DOM">正在扫描 DOM</span>
+            <span class="glitch" :data-text="exporting ? '正在生成报告' : '正在扫描 DOM'">
+              {{ exporting ? '正在生成报告' : '正在扫描 DOM' }}
+            </span>
             <div class="hud-progress">
-              <div class="hud-bar"></div>
+              <div class="hud-bar" :style="{ width: exporting ? (exportProgress / exportTotal * 100) + '%' : '30%' }"></div>
             </div>
-            <span class="hud-sub">正在分析 CSS 架构...</span>
+            <span class="hud-sub">
+              {{ exporting ? `正在处理第 ${exportProgress}/${exportTotal} 个元素...` : '正在分析 CSS 架构...' }}
+            </span>
           </div>
           <div class="hud-corners">
             <span></span><span></span><span></span><span></span>
@@ -581,6 +757,32 @@ h1 {
   font-weight: 700;
   letter-spacing: 0.5px;
   color: #4a90e2;
+}
+
+.header-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.export-btn {
+  background: #fff;
+  border: 1px solid #4a90e2;
+  color: #4a90e2;
+  padding: 5px 12px;
+  font-size: 11px;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.export-btn:hover:not(:disabled) {
+  background: #f0f7ff;
+}
+
+.export-btn:disabled {
+  border-color: #ccc;
+  color: #ccc;
+  cursor: not-allowed;
 }
 
 .scan-btn {

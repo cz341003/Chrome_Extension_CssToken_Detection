@@ -190,10 +190,42 @@ export default defineContentScript({
             else if (typeof el.className === 'object' && el.className !== null) className = (el.className as any).baseVal || '';
             
             const style = window.getComputedStyle(el);
-            const isVisible = style.display !== 'none' && style.visibility !== 'hidden' && parseFloat(style.opacity) !== 0;
-            
-            return { id, tagName: el.tagName.toLowerCase(), className, isVisible };
+          const isVisible = style.display !== 'none' && style.visibility !== 'hidden' && parseFloat(style.opacity) !== 0;
+          
+          // 生成简单的 CSS 选择器路径
+          const getSelector = (element: Element) => {
+            const path = [];
+            let current: Element | null = element;
+            while (current && current.nodeType === Node.ELEMENT_NODE) {
+              let selector = current.tagName.toLowerCase();
+              if (current.id) {
+                selector += `#${current.id}`;
+                path.unshift(selector);
+                break;
+              } else {
+                let className = '';
+                if (typeof current.className === 'string') className = current.className;
+                else if (typeof current.className === 'object' && current.className !== null) className = (current.className as any).baseVal || '';
+                
+                if (className) {
+                  selector += `.${className.trim().split(/\s+/)[0]}`;
+                }
+                let sibling = current;
+                let nth = 1;
+                while (sibling.previousElementSibling) {
+                  sibling = sibling.previousElementSibling;
+                  if (sibling.tagName === current.tagName) nth++;
+                }
+                if (nth > 1) selector += `:nth-of-type(${nth})`;
+              }
+              path.unshift(selector);
+              current = current.parentElement;
+            }
+            return path.join(' > ');
           };
+
+          return { id, tagName: el.tagName.toLowerCase(), className, isVisible, selector: getSelector(el) };
+        };
 
           const unusedResults = Array.from(unusedMap.entries())
             .map(([el, data]) => ({
