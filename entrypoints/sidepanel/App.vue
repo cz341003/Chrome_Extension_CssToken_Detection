@@ -240,6 +240,7 @@ const getTokenIcon = (type: string) => {
   }
 };
 
+
 // 对 Used Tokens 进行分组
 const groupTokens = (tokens: Token[]) => {
   const groups: Record<string, Token[]> = {};
@@ -1151,7 +1152,7 @@ main {
     .group-header {
       font-size: 10px;
       font-weight: 600;
-      color: @text-muted;
+      color: #555;
       margin-bottom: 6px;
       text-transform: uppercase;
     }
