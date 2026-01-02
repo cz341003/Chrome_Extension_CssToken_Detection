@@ -576,11 +576,6 @@ const downloadScreenshot = () => {
           <div v-else class="results">
             <div v-for="(elements, frameId) in filteredUnusedElements" :key="frameId">
               <div v-if="activeFrameId === frameId" class="frame-group">
-                <div class="frame-header" v-if="Object.keys(filteredUnusedElements).length === 1">
-                  <span class="frame-icon">▤</span>
-                  <span class="frame-title">{{ frameId }}</span>
-                  <span class="frame-count">{{ elements.length }}</span>
-                </div>
                 <ul class="element-list">
                   <li 
                     v-for="el in elements" 
