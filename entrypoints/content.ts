@@ -1,3 +1,6 @@
+import { TARGET_PROPERTIES, EXCLUDED_TAGS } from '../utils/constants';
+import { getElementFingerprint, getSelector } from '../utils/dom';
+
 export default defineContentScript({
   matches: ['<all_urls>'],
   main() {
@@ -16,20 +19,6 @@ export default defineContentScript({
       if (message.type === 'SCAN_TOKENS') {
         // 优化：只关注未使用变量的元素，并增加 frameId 标识
         const unusedMap = new Map<Element, { props: { property: string; value: string }[], frameId: string }>();
-        const excludedTags = new Set([
-          'svg', 'path', 'g', 'rect', 'circle', 'line', 'polyline', 'polygon', 'ellipse', 'use', 'defs', 'symbol',
-          'script', 'style', 'link', 'meta', 'head', 'html', 'body',
-          'canvas', 'picture', 'em', 'strong', 'br'
-        ]);
-        
-        const TARGET_PROPERTIES = [
-          'color', 'background-color', 'border-color', 'border-top-color', 'border-right-color', 'border-bottom-color', 'border-left-color', 'outline-color', 'text-decoration-color',
-          'margin', 'margin-top', 'margin-right', 'margin-bottom', 'margin-left', 'padding', 'padding-top', 'padding-right', 'padding-bottom', 'padding-left',
-          'border', 'border-width', 'border-top-width', 'border-right-width', 'border-bottom-width', 'border-left-width', 'border-style', 'border-top-style', 'border-right-style', 'border-bottom-style', 'border-left-style', 'border-radius', 'border-top-left-radius', 'border-top-right-radius', 'border-bottom-left-radius', 'border-bottom-right-radius',
-          'box-shadow', 'text-shadow',
-          'line-height',
-          'font-size', 'font-weight'
-        ];
         const TARGET_PROPERTIES_SET = new Set(TARGET_PROPERTIES);
 
         let lastYieldTime = performance.now();
@@ -42,24 +31,6 @@ export default defineContentScript({
         };
 
         const seenFingerprints = new Set<string>();
-        const getElementFingerprint = (el: Element, frameId: string) => {
-          const tagName = el.tagName.toLowerCase();
-          let className = '';
-          if (typeof el.className === 'string') className = el.className;
-          else if (typeof el.className === 'object' && el.className !== null) className = (el.className as any).baseVal || '';
-          const sortedClass = className.split(/\s+/).sort().join(' ');
-          
-          const parent = el.parentElement;
-          let parentInfo = '';
-          if (parent) {
-            let pClass = '';
-            if (typeof parent.className === 'string') pClass = parent.className;
-            else if (typeof parent.className === 'object' && parent.className !== null) pClass = (parent.className as any).baseVal || '';
-            parentInfo = `${parent.tagName.toLowerCase()}.${pClass.split(/\s+/).sort().join(' ')}`;
-          }
-          
-          return `${frameId}:${tagName}.${sortedClass}<${parentInfo}`;
-        };
 
         const scanFrame = async (win: Window, frameId: string) => {
           let doc: Document;
@@ -121,7 +92,7 @@ export default defineContentScript({
                 if (seenFingerprints.has(fingerprint)) continue;
 
                 const tagName = el.tagName.toLowerCase();
-                if (excludedTags.has(tagName)) continue;
+                if (EXCLUDED_TAGS.has(tagName)) continue;
 
                 // 标记为已处理
                 seenFingerprints.add(fingerprint);
@@ -151,7 +122,7 @@ export default defineContentScript({
                     const fingerprint = getElementFingerprint(el, frameId);
                     if (seenFingerprints.has(fingerprint)) continue;
 
-                    if (excludedTags.has(el.tagName.toLowerCase())) continue;
+                    if (EXCLUDED_TAGS.has(el.tagName.toLowerCase())) continue;
                     
                     seenFingerprints.add(fingerprint);
                     if (!unusedMap.has(el)) unusedMap.set(el, { props: [], frameId });
@@ -190,42 +161,10 @@ export default defineContentScript({
             else if (typeof el.className === 'object' && el.className !== null) className = (el.className as any).baseVal || '';
             
             const style = window.getComputedStyle(el);
-          const isVisible = style.display !== 'none' && style.visibility !== 'hidden' && parseFloat(style.opacity) !== 0;
+            const isVisible = style.display !== 'none' && style.visibility !== 'hidden' && parseFloat(style.opacity) !== 0;
           
-          // 生成简单的 CSS 选择器路径
-          const getSelector = (element: Element) => {
-            const path = [];
-            let current: Element | null = element;
-            while (current && current.nodeType === Node.ELEMENT_NODE) {
-              let selector = current.tagName.toLowerCase();
-              if (current.id) {
-                selector += `#${current.id}`;
-                path.unshift(selector);
-                break;
-              } else {
-                let className = '';
-                if (typeof current.className === 'string') className = current.className;
-                else if (typeof current.className === 'object' && current.className !== null) className = (current.className as any).baseVal || '';
-                
-                if (className) {
-                  selector += `.${className.trim().split(/\s+/)[0]}`;
-                }
-                let sibling = current;
-                let nth = 1;
-                while (sibling.previousElementSibling) {
-                  sibling = sibling.previousElementSibling;
-                  if (sibling.tagName === current.tagName) nth++;
-                }
-                if (nth > 1) selector += `:nth-of-type(${nth})`;
-              }
-              path.unshift(selector);
-              current = current.parentElement;
-            }
-            return path.join(' > ');
+            return { id, tagName: el.tagName.toLowerCase(), className, isVisible, selector: getSelector(el) };
           };
-
-          return { id, tagName: el.tagName.toLowerCase(), className, isVisible, selector: getSelector(el) };
-        };
 
           const unusedResults = Array.from(unusedMap.entries())
             .map(([el, data]) => ({
