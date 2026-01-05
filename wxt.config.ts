@@ -6,6 +6,7 @@ export default defineConfig({
   manifest: {
     name: 'CSS Token Detector',
     permissions: ['activeTab', 'scripting', 'sidePanel', 'contextMenus'],
+    host_permissions: ['<all_urls>'],
     action: {
       default_popup: 'entrypoints/popup/index.html',
     },

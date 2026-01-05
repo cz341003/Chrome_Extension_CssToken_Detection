@@ -35,8 +35,8 @@ export default defineBackground(() => {
   // 监听截图请求
   browser.runtime.onMessage.addListener((message, sender, sendResponse) => {
     if (message.type === 'CAPTURE_TAB') {
-      // @ts-ignore - WXT/Browser types might vary, but captureVisibleTab can take null/undefined for current window
-      browser.tabs.captureVisibleTab(null, { format: 'png' })
+      // @ts-ignore - WXT/Browser types might vary, but captureVisibleTab can take windowId or null for current window
+      browser.tabs.captureVisibleTab(message.windowId || null, { format: 'png' })
         .then(dataUrl => {
           sendResponse({ dataUrl });
         })

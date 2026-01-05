@@ -211,7 +211,10 @@ const captureElementScreenshot = async (id: string, crop: boolean = false): Prom
   if (!rectRes?.rect) return null;
 
   // 2. 捕获标签页截图
-  const capRes = await browser.runtime.sendMessage({ type: 'CAPTURE_TAB' });
+  const capRes = await browser.runtime.sendMessage({ 
+    type: 'CAPTURE_TAB',
+    windowId: tab.windowId
+  });
   if (capRes.error || !capRes.dataUrl) throw new Error(capRes.error || '截图失败');
 
   // 3. Canvas 合成
