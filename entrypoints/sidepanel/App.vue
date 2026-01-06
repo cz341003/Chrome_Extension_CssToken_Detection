@@ -5,7 +5,8 @@ import {
   getGroup, 
   getGroupLabel, 
   getTokenType, 
-  getTokenIcon 
+  getTokenIcon,
+  getPropertyChineseName
 } from '../../utils/constants';
 import { Token, Hardcoded, DetectedElement } from '../../utils/types';
 import { generateHTMLReport } from '../../utils/report';
@@ -287,6 +288,13 @@ const handleScreenshotClick = async (id: string) => {
   }
 };
 
+const cancelExport = () => {
+  exporting.value = false;
+  toastMessage.value = '导出已取消';
+  showToast.value = true;
+  setTimeout(() => showToast.value = false, 3000);
+};
+
 const exportReport = async () => {
   if (exporting.value || unusedElements.value.length === 0) return;
   
@@ -299,7 +307,7 @@ const exportReport = async () => {
 
   try {
     for (let i = 0; i < targets.length; i++) {
-      // 检查是否已被取消（如触发了重新扫描）
+      // 检查是否已被取消
       if (!exporting.value) return;
 
       const el = targets[i];
@@ -318,8 +326,9 @@ const exportReport = async () => {
           screenshot: null
         });
       }
-      // 稍微停顿一下，让页面有时间响应滚动
-      await new Promise(r => setTimeout(r, 300));
+      // 增加停顿时间以解决 MAX_CAPTURE_VISIBLE_TAB_CALLS_PRE_SECOND 限制
+      // 默认 1秒内限制次数，这里增加到 1000ms 确保安全
+      await new Promise(r => setTimeout(r, 1000));
     }
 
     if (!exporting.value) return;
@@ -496,8 +505,13 @@ const downloadScreenshot = () => {
                             <div v-if="getTokenType(item.value) === 'color'" class="color-preview" :style="{ backgroundColor: item.value }"></div>
                             <div v-else class="type-icon">{{ getTokenIcon(getTokenType(item.value)) }}</div>
                             <div class="hardcoded-details">
-                              <span class="prop-name">{{ item.property }}</span>
+                              <span class="prop-name">
+                                {{ item.property }} <span class="prop-zh">{{ getPropertyChineseName(item.property) }}</span>
+                              </span>
                               <span class="prop-value">{{ item.value }}</span>
+                              <div v-if="['font-size', 'font-weight', 'font-family', 'color', 'border', 'border-color'].some(p => item.property.includes(p))" class="prop-suggestion">
+                                💡 建议使用变量
+                              </div>
                             </div>
                           </div>
                         </div>
@@ -566,6 +580,7 @@ const downloadScreenshot = () => {
             <span class="hud-sub">
               {{ exporting ? `正在处理第 ${exportProgress}/${exportTotal} 个元素...` : '正在分析 CSS 架构...' }}
             </span>
+            <button v-if="exporting" @click="cancelExport" class="cancel-export-btn">取消导出</button>
           </div>
           <div class="hud-corners">
             <span></span><span></span><span></span><span></span>

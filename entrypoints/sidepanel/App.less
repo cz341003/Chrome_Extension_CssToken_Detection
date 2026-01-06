@@ -476,17 +476,35 @@ main {
         .hardcoded-details {
           display: flex;
           justify-content: space-between;
+          flex-wrap: wrap;
           flex: 1;
 
           .prop-name {
             font-size: 11px;
             color: #495057;
+
+            .prop-zh {
+              font-size: 10px;
+              color: @text-muted;
+              margin-left: 4px;
+            }
           }
 
           .prop-value {
             font-size: 11px;
             color: @error-color;
             font-weight: 500;
+          }
+
+          .prop-suggestion {
+            width: 100%;
+            font-size: 10px;
+            color: @primary-color;
+            background: rgba(74, 144, 226, 0.05);
+            padding: 4px 8px;
+            border-radius: 4px;
+            margin-top: 4px;
+            border-left: 2px solid @primary-color;
           }
         }
       }
@@ -522,6 +540,46 @@ main {
       font-size: 13px;
       color: @primary-color;
       font-weight: 600;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 8px;
+
+      .hud-progress {
+        width: 200px;
+        height: 4px;
+        background: #e9ecef;
+        border-radius: 2px;
+        overflow: hidden;
+
+        .hud-bar {
+          height: 100%;
+          background: @primary-color;
+          transition: width 0.3s ease;
+        }
+      }
+
+      .hud-sub {
+        font-size: 11px;
+        color: @text-secondary;
+        font-weight: normal;
+      }
+
+      .cancel-export-btn {
+        margin-top: 8px;
+        background: #fff;
+        border: 1px solid @error-color;
+        color: @error-color;
+        padding: 4px 12px;
+        font-size: 11px;
+        border-radius: 4px;
+        cursor: pointer;
+        transition: all 0.2s;
+
+        &:hover {
+          background: @error-bg;
+        }
+      }
     }
   }
 }
