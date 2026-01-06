@@ -119,3 +119,11 @@ export const getTokenIcon = (type: string) => {
     default: return '🔧';
   }
 };
+
+// 排除监听 DOM 变化的元素选择器（ID 或类名）
+export const EXCLUDED_OBSERVER_SELECTORS = [
+  '#wxt-root', // WXT 注入的根节点
+  '.wxt-ignore',
+  '#css-token-detector-ui',
+  '.css-token-detector-ignore'
+];

@@ -1,4 +1,4 @@
-import { TARGET_PROPERTIES, EXCLUDED_TAGS } from '../utils/constants';
+import { TARGET_PROPERTIES, EXCLUDED_TAGS, EXCLUDED_OBSERVER_SELECTORS } from '../utils/constants';
 import { getElementFingerprint, getSelector } from '../utils/dom';
 
 export default defineContentScript({
@@ -346,23 +346,57 @@ export default defineContentScript({
       }
     });
 
-    // 监听 iframe 状态变化
+    // 监听 DOM 变化
     let debounceTimer: any = null;
     const observer = new MutationObserver((mutations) => {
-      const hasIframeChange = mutations.some(m => 
-        (m.target instanceof HTMLElement && m.target.tagName === 'IFRAME') ||
-        (m.target instanceof HTMLElement && m.target.querySelector('iframe'))
-      );
+      const hasSignificantChange = mutations.some(m => {
+        const target = m.target as HTMLElement;
+        
+        // 检查目标元素或其父级是否在排除列表中
+        const isExcluded = (el: HTMLElement | null): boolean => {
+          if (!el || el === document.body) return false;
+          const matches = EXCLUDED_OBSERVER_SELECTORS.some(selector => {
+            try {
+              return el.matches(selector);
+            } catch (e) {
+              return false;
+            }
+          });
+          if (matches) return true;
+          return isExcluded(el.parentElement);
+        };
 
-      if (hasIframeChange) {
+        if (isExcluded(target)) return false;
+
+        // 监听子节点的新增或删除
+        if (m.type === 'childList') {
+          // 检查新增或删除的节点是否包含非排除元素
+          const nodes = [...Array.from(m.addedNodes), ...Array.from(m.removedNodes)];
+          return nodes.some(node => {
+            if (node instanceof HTMLElement) {
+              return !isExcluded(node);
+            }
+            return false;
+          });
+        }
+
+        // 监听属性变化（style, class）
+        if (m.type === 'attributes') {
+          return !isExcluded(target);
+        }
+
+        return false;
+      });
+
+      if (hasSignificantChange) {
         clearTimeout(debounceTimer);
         debounceTimer = setTimeout(() => {
-          browser.runtime.sendMessage({ type: 'IFRAME_CHANGED' }).catch(() => {});
+          browser.runtime.sendMessage({ type: 'DOM_CHANGED' }).catch(() => {});
         }, 1000); // 1秒防抖，避免频繁重扫
       }
     });
 
-    observer.observe(document.body, {
+    observer.observe(document.documentElement, {
       attributes: true,
       childList: true,
       subtree: true,

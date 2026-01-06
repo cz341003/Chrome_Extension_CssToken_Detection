@@ -166,7 +166,7 @@ const viewAncestors = async (id: string, event: Event) => {
 };
 
 const messageListener = (message: any) => {
-  if (message.type === 'TAB_UPDATED' || message.type === 'TAB_ACTIVATED' || message.type === 'IFRAME_CHANGED') {
+  if (message.type === 'TAB_UPDATED' || message.type === 'TAB_ACTIVATED' || message.type === 'DOM_CHANGED') {
     if (hasScanned.value) {
       needsRescan.value = true;
     }
